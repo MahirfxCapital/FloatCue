@@ -701,21 +701,95 @@ public final class MainActivity extends Activity {
         intent.setType("text/plain");
         startActivityForResult(intent,DOC_REQUEST);
     }
-    @Override protected void onActivityResult(int request,int result,Intent data) {
-        super.onActivityResult(request,result,data);
-        if(request!=DOC_REQUEST || result!=RESULT_OK || data==null || data.getData()==null)return;
-        if(!editorOpen)openEditor();
-        try(InputStream in=getContentResolver().openInputStream(data.getData());
+    private void exportScript() {
+        if (editorOpen) saveEditor(false);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        String fileName = selected.title.replaceAll("[^a-zA-Z0-9_-]+", "_");
+        if (fileName.isEmpty()) fileName = "FloatCue_Script";
+        intent.putExtra(Intent.EXTRA_TITLE, fileName + ".txt");
+        startActivityForResult(intent, EXPORT_TXT);
+    }
+    private void exportBackup() {
+        if (editorOpen) saveEditor(false);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, "FloatCue-Library-Backup.json");
+        startActivityForResult(intent, EXPORT_BACKUP);
+    }
+    private void importBackup() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json","text/plain"});
+        startActivityForResult(intent, RESTORE_BACKUP);
+    }
+    private String readFile(Uri uri,int limit) throws Exception {
+        try(InputStream in=getContentResolver().openInputStream(uri);
             ByteArrayOutputStream out=new ByteArrayOutputStream()){
-            if(in==null)throw new IllegalArgumentException("Cannot open file");
+            if(in==null)throw new IllegalArgumentException("Unable to open document");
             byte[] chunk=new byte[8192];int size;
             while((size=in.read(chunk))!=-1){
-                if(out.size()+size>1024*1024)throw new IllegalArgumentException("File exceeds 1MB");
+                if(out.size()+size>limit)throw new IllegalArgumentException("Document too large");
                 out.write(chunk,0,size);
             }
-            scriptInput.setText(out.toString(StandardCharsets.UTF_8.name()));
-            toast("Text imported. Save when ready.");
-        }catch(Exception ex){toast("Import failed. Use a TXT file under 1 MB.");}
+            return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+    private void writeFile(Uri uri,String value) throws Exception {
+        try(OutputStream out=getContentResolver().openOutputStream(uri,"w")){
+            if(out==null)throw new IllegalArgumentException("Unable to write document");
+            out.write(value.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        }
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data) {
+        super.onActivityResult(request,result,data);
+        if(result!=RESULT_OK || data==null || data.getData()==null)return;
+        final Uri uri=data.getData();
+        if(request==EXPORT_TXT || request==EXPORT_BACKUP){
+            try {
+                String payload = request==EXPORT_TXT ? selected.body : ScriptStore.exportJson(this);
+                writeFile(uri,payload);
+                toast(request==EXPORT_TXT ? "Script exported to TXT" : "Library backup created");
+            } catch(Exception exception){toast("Export failed. Please choose another folder.");}
+            return;
+        }
+        if(request==DOC_REQUEST){
+            if(!editorOpen)openEditor();
+            try{
+                scriptInput.setText(readFile(uri,1024*1024));
+                scheduleAutosave();
+                toast("Text imported and will be saved");
+            }catch(Exception exception){toast("Import failed. Use a TXT file under 1 MB.");}
+            return;
+        }
+        if(request==RESTORE_BACKUP){
+            try {
+                final String backup=readFile(uri,2*1024*1024);
+                // Explicit user consent; keep a previous local snapshot on restore.
+                new AlertDialog.Builder(this)
+                    .setTitle("Restore FloatCue library?")
+                    .setMessage("This replaces your current scripts. Export a backup first if you want to keep them.")
+                    .setNegativeButton("Cancel",null)
+                    .setPositiveButton("Restore",(dialog,which)->{
+                        try{
+                            int count=ScriptStore.restoreJson(this,backup);
+                            selected=ScriptStore.active(this);
+                            dirty=false;
+                            editorOpen=false;
+                            tab=1;
+                            buildStudio();
+                            refreshOverlay();
+                            toast(count+" scripts restored");
+                        }catch(Exception invalid){
+                            toast("Restore failed: invalid FloatCue backup");
+                        }
+                    }).show();
+            }catch(Exception exception){toast("Could not read backup. Limit is 2 MB.");}
+        }
     }
     private void handleIncoming(Intent intent){
         if(intent==null)return;
