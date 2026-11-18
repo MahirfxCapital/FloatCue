@@ -15,6 +15,9 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.content.res.ColorStateList;
+import android.widget.ProgressBar;
+import java.util.Locale;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -30,6 +33,7 @@ import android.widget.TextView;
 public final class OverlayService extends Service {
     public static final String ACTION_SHOW = "com.hisabtech.floatcue.SHOW";
     public static final String ACTION_REFRESH = "com.hisabtech.floatcue.REFRESH";
+    public static final String ACTION_STOP = "com.hisabtech.floatcue.STOP";
     private static final String CHANNEL = "floatcue_overlay";
     private static final int NOTIFICATION_ID = 2001;
     private static final int PURPLE = 0xff9a76ff;
@@ -42,7 +46,14 @@ public final class OverlayService extends Service {
     private WindowManager.LayoutParams params;
     private FrameLayout root;
     private LinearLayout panel;
-    private TextView bubble, scriptText, status;
+    private TextView bubble, scriptText, status, metrics, countdownText;
+    private ProgressBar progress;
+    private View focusLine;
+    private FrameLayout readingArea;
+    private boolean countingDown = false, startedOnce = false;
+    private Runnable countdownTick;
+    private long lastMetricsUpdate = 0;
+    private String displayedScriptId = "";
     private ScrollView scriptScroll;
     private Button playButton;
     private boolean playing = false;
@@ -53,6 +64,7 @@ public final class OverlayService extends Service {
     private float speed = 90;
     private double scrollPosition = 0;
     private long lastFrame = 0;
+    private float density() { return getResources().getDisplayMetrics().density; }
 
     private final Runnable frame = new Runnable() {
         @Override public void run() {
@@ -60,13 +72,17 @@ public final class OverlayService extends Service {
             long now = SystemClock.uptimeMillis();
             double seconds = Math.min(.08, Math.max(0, now - lastFrame) / 1000.0);
             lastFrame = now;
-            float density = getResources().getDisplayMetrics().density;
-            scrollPosition += speed * density * seconds;
+            scrollPosition += speed * density() * seconds;
             int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
             if (max > 0 && scrollPosition >= max) {
                 scrollPosition = max; setPlaying(false);
             }
             scriptScroll.scrollTo(0, (int) scrollPosition);
+            if (now - lastMetricsUpdate > 450) {
+                updateProgress();
+                persistProgress();
+                lastMetricsUpdate = now;
+            }
             if (playing) handler.postDelayed(this, 16);
         }
     };
@@ -80,6 +96,9 @@ public final class OverlayService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_SHOW : intent.getAction();
+        if (ACTION_STOP.equals(action)) {
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (ACTION_REFRESH.equals(action)) {
             if (root != null) refreshFromSettings();
             return START_STICKY;
@@ -105,11 +124,15 @@ public final class OverlayService extends Service {
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent pending = PendingIntent.getActivity(this, 0, open,
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Intent stop = new Intent(this, OverlayService.class).setAction(ACTION_STOP);
+        PendingIntent stopAction = PendingIntent.getService(this, 1, stop,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_edit)
-            .setContentTitle("FloatCue is ready")
-            .setContentText("Your floating script reader is active")
+            .setContentTitle("FloatCue reader active")
+            .setContentText("Tap to edit or use Stop to close the overlay")
             .setContentIntent(pending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop reader", stopAction)
             .setOngoing(true)
             .build();
     }
@@ -136,13 +159,13 @@ public final class OverlayService extends Service {
         return b;
     }
     private void addControl(LinearLayout row, Button b, int width) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(width), dp(35));
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(width), dp(42));
         p.leftMargin = dp(4);
         row.addView(b, p);
     }
     private void createOverlay() {
         panelWidth = ScriptStore.prefs(this).getInt("panel_width", dp(335));
-        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(280));
+        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(310));
         params = new WindowManager.LayoutParams(
             panelWidth, panelHeight, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
@@ -164,10 +187,10 @@ public final class OverlayService extends Service {
         TextView grip = text("⋮⋮  ✦ FloatCue", 14, WHITE, true); grip.setContentDescription("Drag floating reader");
         grip.setOnTouchListener(dragListener(false));
         top.addView(grip, new LinearLayout.LayoutParams(0, dp(40), 1));
-        addControl(top, control("A−", v -> changeFont(-2)), 32);
-        addControl(top, control("A+", v -> changeFont(2)), 32);
-        addControl(top, control("⌄", v -> collapse()), 30);
-        addControl(top, control("×", v -> stopSelf()), 30);
+        addControl(top, control("A−", v -> changeFont(-2)), 40);
+        addControl(top, control("A+", v -> changeFont(2)), 40);
+        addControl(top, control("⌄", v -> collapse()), 40);
+        addControl(top, control("×", v -> stopSelf()), 40);
         panel.addView(top, new LinearLayout.LayoutParams(-1, dp(50)));
 
         scriptScroll = new ScrollView(this);
@@ -183,17 +206,17 @@ public final class OverlayService extends Service {
 
         LinearLayout footer = new LinearLayout(this);
         footer.setGravity(Gravity.CENTER_VERTICAL);
-        footer.setPadding(dp(8), dp(3), dp(8), dp(6));
-        playButton = control("▶  Play", v -> setPlaying(!playing)); playButton.setBackground(rounded(PURPLE, 13)); playButton.setTextColor(0xff160d25);
-        addControl(footer, playButton, 70);
-        addControl(footer, control("↺", v -> restart()), 34);
-        addControl(footer, control("−", v -> changeSpeed(-20)), 39);
-        addControl(footer, control("+", v -> changeSpeed(20)), 39);
+        footer.setPadding(dp(5), dp(4), dp(5), dp(4));
+        playButton = control("▶  Play", v -> togglePlay()); playButton.setBackground(rounded(PURPLE, 13)); playButton.setTextColor(0xff160d25);
+        addControl(footer, playButton, 76);
+        addControl(footer, control("↺", v -> restart()), 44);
+        addControl(footer, control("−", v -> changeSpeed(-20)), 44);
+        addControl(footer, control("+", v -> changeSpeed(20)), 44);
         addControl(footer, control("⇋", v -> {
             mirrored = !mirrored;
             scriptText.setScaleX(mirrored ? -1 : 1);
-        }), 37);
-        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(48)));
+        }), 44);
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(50)));
 
         status = text("90 px/s    •    RESIZE ↘", 10, MUTED, true); status.setContentDescription("Drag to resize floating reader");
         status.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
