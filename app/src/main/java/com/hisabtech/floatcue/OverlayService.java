@@ -15,6 +15,9 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.content.res.ColorStateList;
+import android.widget.ProgressBar;
+import java.util.Locale;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -30,6 +33,7 @@ import android.widget.TextView;
 public final class OverlayService extends Service {
     public static final String ACTION_SHOW = "com.hisabtech.floatcue.SHOW";
     public static final String ACTION_REFRESH = "com.hisabtech.floatcue.REFRESH";
+    public static final String ACTION_STOP = "com.hisabtech.floatcue.STOP";
     private static final String CHANNEL = "floatcue_overlay";
     private static final int NOTIFICATION_ID = 2001;
     private static final int PURPLE = 0xff9a76ff;
@@ -42,7 +46,14 @@ public final class OverlayService extends Service {
     private WindowManager.LayoutParams params;
     private FrameLayout root;
     private LinearLayout panel;
-    private TextView bubble, scriptText, status;
+    private TextView bubble, scriptText, status, metrics, countdownText;
+    private ProgressBar progress;
+    private View focusLine;
+    private FrameLayout readingArea;
+    private boolean countingDown = false, startedOnce = false;
+    private Runnable countdownTick;
+    private long lastMetricsUpdate = 0;
+    private String displayedScriptId = "";
     private ScrollView scriptScroll;
     private Button playButton;
     private boolean playing = false;
@@ -53,6 +64,7 @@ public final class OverlayService extends Service {
     private float speed = 90;
     private double scrollPosition = 0;
     private long lastFrame = 0;
+    private float density() { return getResources().getDisplayMetrics().density; }
 
     private final Runnable frame = new Runnable() {
         @Override public void run() {
@@ -60,13 +72,17 @@ public final class OverlayService extends Service {
             long now = SystemClock.uptimeMillis();
             double seconds = Math.min(.08, Math.max(0, now - lastFrame) / 1000.0);
             lastFrame = now;
-            float density = getResources().getDisplayMetrics().density;
-            scrollPosition += speed * density * seconds;
+            scrollPosition += speed * density() * seconds;
             int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
             if (max > 0 && scrollPosition >= max) {
                 scrollPosition = max; setPlaying(false);
             }
             scriptScroll.scrollTo(0, (int) scrollPosition);
+            if (now - lastMetricsUpdate > 450) {
+                updateProgress();
+                persistProgress();
+                lastMetricsUpdate = now;
+            }
             if (playing) handler.postDelayed(this, 16);
         }
     };
@@ -80,6 +96,9 @@ public final class OverlayService extends Service {
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         String action = intent == null ? ACTION_SHOW : intent.getAction();
+        if (ACTION_STOP.equals(action)) {
+            stopSelf(); return START_NOT_STICKY;
+        }
         if (ACTION_REFRESH.equals(action)) {
             if (root != null) refreshFromSettings();
             return START_STICKY;
@@ -105,11 +124,15 @@ public final class OverlayService extends Service {
         Intent open = new Intent(this, MainActivity.class);
         PendingIntent pending = PendingIntent.getActivity(this, 0, open,
             PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        Intent stop = new Intent(this, OverlayService.class).setAction(ACTION_STOP);
+        PendingIntent stopAction = PendingIntent.getService(this, 1, stop,
+            PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_menu_edit)
-            .setContentTitle("FloatCue is ready")
-            .setContentText("Your floating script reader is active")
+            .setContentTitle("FloatCue reader active")
+            .setContentText("Tap to edit or use Stop to close the overlay")
             .setContentIntent(pending)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop reader", stopAction)
             .setOngoing(true)
             .build();
     }
@@ -136,13 +159,13 @@ public final class OverlayService extends Service {
         return b;
     }
     private void addControl(LinearLayout row, Button b, int width) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(width), dp(35));
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(dp(width), dp(42));
         p.leftMargin = dp(4);
         row.addView(b, p);
     }
     private void createOverlay() {
         panelWidth = ScriptStore.prefs(this).getInt("panel_width", dp(335));
-        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(280));
+        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(310));
         params = new WindowManager.LayoutParams(
             panelWidth, panelHeight, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
@@ -164,12 +187,13 @@ public final class OverlayService extends Service {
         TextView grip = text("⋮⋮  ✦ FloatCue", 14, WHITE, true); grip.setContentDescription("Drag floating reader");
         grip.setOnTouchListener(dragListener(false));
         top.addView(grip, new LinearLayout.LayoutParams(0, dp(40), 1));
-        addControl(top, control("A−", v -> changeFont(-2)), 32);
-        addControl(top, control("A+", v -> changeFont(2)), 32);
-        addControl(top, control("⌄", v -> collapse()), 30);
-        addControl(top, control("×", v -> stopSelf()), 30);
+        addControl(top, control("A−", v -> changeFont(-2)), 40);
+        addControl(top, control("A+", v -> changeFont(2)), 40);
+        addControl(top, control("⌄", v -> collapse()), 40);
+        addControl(top, control("×", v -> stopSelf()), 40);
         panel.addView(top, new LinearLayout.LayoutParams(-1, dp(50)));
 
+        readingArea = new FrameLayout(this);
         scriptScroll = new ScrollView(this);
         scriptScroll.setFillViewport(false);
         scriptScroll.setVerticalScrollBarEnabled(false);
@@ -179,21 +203,61 @@ public final class OverlayService extends Service {
         scriptText.setLineSpacing(dp(10), 1.14f);
         scriptText.setPadding(dp(20), dp(13), dp(20), dp(27));
         scriptScroll.addView(scriptText, new ScrollView.LayoutParams(-1, -2));
-        panel.addView(scriptScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        scriptScroll.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN && playing) setPlaying(false);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                scrollPosition = scriptScroll.getScrollY();
+                updateProgress(); persistProgress();
+            }
+            return false; // let ScrollView handle the actual gesture
+        });
+        readingArea.addView(scriptScroll, new FrameLayout.LayoutParams(-1, -1));
+        focusLine = new View(this);
+        focusLine.setBackground(rounded(0xffb9a2ff, 3));
+        focusLine.setAlpha(.78f);
+        FrameLayout.LayoutParams focusParams = new FrameLayout.LayoutParams(-1, dp(2), Gravity.TOP);
+        focusParams.leftMargin = dp(18); focusParams.rightMargin = dp(18);
+        readingArea.addView(focusLine, focusParams);
+        readingArea.addOnLayoutChangeListener((v,left,topEdge,right,bottom,oldLeft,oldTop,oldRight,oldBottom) -> {
+            FrameLayout.LayoutParams fp = (FrameLayout.LayoutParams) focusLine.getLayoutParams();
+            int fraction = ScriptStore.prefs(this).getInt("focus_position", 33);
+            int desired = Math.max(dp(22), (bottom - topEdge) * fraction / 100);
+            if (fp.topMargin != desired) { fp.topMargin = desired; focusLine.setLayoutParams(fp); }
+        });
+        countdownText = text("3", 56, WHITE, true);
+        countdownText.setGravity(Gravity.CENTER);
+        countdownText.setBackground(rounded(0xee4b3480, 26));
+        countdownText.setElevation(dp(8));
+        countdownText.setVisibility(View.GONE);
+        FrameLayout.LayoutParams countParams = new FrameLayout.LayoutParams(dp(100), dp(100), Gravity.CENTER);
+        readingArea.addView(countdownText, countParams);
+        panel.addView(readingArea, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        metrics = text("0%   •   Ready to read", 11, MUTED, true);
+        metrics.setGravity(Gravity.CENTER_VERTICAL);
+        metrics.setPadding(dp(17), 0, dp(12), 0);
+        panel.addView(metrics, new LinearLayout.LayoutParams(-1, dp(19)));
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1000);
+        progress.setProgressTintList(ColorStateList.valueOf(PURPLE));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(0xff49405e));
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(3));
+        progressParams.leftMargin = dp(17); progressParams.rightMargin = dp(17);
+        panel.addView(progress, progressParams);
 
         LinearLayout footer = new LinearLayout(this);
         footer.setGravity(Gravity.CENTER_VERTICAL);
-        footer.setPadding(dp(8), dp(3), dp(8), dp(6));
-        playButton = control("▶  Play", v -> setPlaying(!playing)); playButton.setBackground(rounded(PURPLE, 13)); playButton.setTextColor(0xff160d25);
-        addControl(footer, playButton, 70);
-        addControl(footer, control("↺", v -> restart()), 34);
-        addControl(footer, control("−", v -> changeSpeed(-20)), 39);
-        addControl(footer, control("+", v -> changeSpeed(20)), 39);
+        footer.setPadding(dp(5), dp(4), dp(5), dp(4));
+        playButton = control("▶  Play", v -> togglePlay()); playButton.setBackground(rounded(PURPLE, 13)); playButton.setTextColor(0xff160d25);
+        addControl(footer, playButton, 76);
+        addControl(footer, control("↺", v -> restart()), 44);
+        addControl(footer, control("−", v -> changeSpeed(-20)), 44);
+        addControl(footer, control("+", v -> changeSpeed(20)), 44);
         addControl(footer, control("⇋", v -> {
             mirrored = !mirrored;
             scriptText.setScaleX(mirrored ? -1 : 1);
-        }), 37);
-        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(48)));
+        }), 44);
+        panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(50)));
 
         status = text("90 px/s    •    RESIZE ↘", 10, MUTED, true); status.setContentDescription("Drag to resize floating reader");
         status.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
@@ -221,17 +285,49 @@ public final class OverlayService extends Service {
         speed = ScriptStore.prefs(this).getInt("speed", 90);
         fontSp = ScriptStore.prefs(this).getInt("font", 34);
         scriptText.setTextSize(fontSp);
-        String script = ScriptStore.active(this).body;
-        scriptText.setText((script == null || script.trim().isEmpty()) ?
-            "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n");
+        ScriptStore.Script active = ScriptStore.active(this);
+        String script = active.body;
+        final boolean newScript = !active.id.equals(displayedScriptId);
+        if (newScript) {
+            cancelCountdown();
+            setPlaying(false);
+            displayedScriptId = active.id;
+            startedOnce = false;
+        }
+        String display = (script == null || script.trim().isEmpty()) ?
+            "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n";
+        // Avoid recreating text and restarting layout on every slider change.
+        if (!display.contentEquals(scriptText.getText())) scriptText.setText(display);
         int opacity = ScriptStore.prefs(this).getInt("opacity", 76);
-        int alpha = (int)(255 * opacity / 100f);
-        panel.setBackground(rounded(Color.argb(alpha, 22, 20, 39), 22));
+        int alpha = Math.min(255, Math.max(60, (int)(255 * opacity / 100f)));
+        int theme = ScriptStore.prefs(this).getInt("reader_theme", 0);
+        int background = theme == 2 ? Color.argb(alpha, 246, 244, 236)
+            : theme == 1 ? Color.argb(alpha, 44, 32, 71)
+            : Color.argb(alpha, 22, 20, 39);
+        panel.setBackground(rounded(background, 22));
+        scriptText.setTextColor(theme == 2 ? 0xff181822 : WHITE);
+        scriptText.setTypeface(Typeface.create(theme == 2 ? "serif" : "sans-serif", Typeface.NORMAL));
+        focusLine.setVisibility(ScriptStore.prefs(this).getBoolean("focus_line", true)
+            ? View.VISIBLE : View.GONE);
+        if (readingArea.getHeight() > 0) {
+            FrameLayout.LayoutParams fp=(FrameLayout.LayoutParams) focusLine.getLayoutParams();
+            int position=Math.max(dp(22), readingArea.getHeight()
+                * ScriptStore.prefs(this).getInt("focus_position", 33) / 100);
+            if (fp.topMargin!=position) { fp.topMargin=position; focusLine.setLayoutParams(fp); }
+        }
+        int direction = ScriptStore.prefs(this).getInt("text_direction", 0);
+        scriptText.setTextDirection(direction == 1 ? View.TEXT_DIRECTION_LTR
+            : direction == 2 ? View.TEXT_DIRECTION_RTL : View.TEXT_DIRECTION_FIRST_STRONG);
+        scriptText.setGravity(Gravity.TOP | (direction == 2 ? Gravity.RIGHT : Gravity.START));
         status.setText((int)speed + " px/s    •    RESIZE ↘");
         scriptScroll.post(() -> {
             int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
-            scrollPosition = Math.min(scrollPosition, max);
+            if (newScript) {
+                float ratio = ScriptStore.prefs(this).getFloat("progress_" + displayedScriptId, 0f);
+                scrollPosition = Math.max(0, Math.min(max, ratio * max));
+            } else scrollPosition = Math.max(0, Math.min(max, scrollPosition));
             scriptScroll.scrollTo(0, (int)scrollPosition);
+            updateProgress();
         });
     }
     private void changeFont(int amount) {
@@ -244,10 +340,72 @@ public final class OverlayService extends Service {
         ScriptStore.prefs(this).edit().putInt("speed", (int)speed).apply();
         if (status != null) status.setText((int)speed + " px/s    •    RESIZE ↘");
     }
+    private void updateProgress() {
+        if (scriptScroll == null || scriptText == null || metrics == null) return;
+        int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
+        int percent = max == 0 ? 100 : (int) Math.min(100, Math.max(0, 100d * scrollPosition / max));
+        if (progress != null) progress.setProgress(percent * 10);
+        double remaining = max == 0 ? 0 : Math.max(0, max - scrollPosition) /
+            Math.max(1d, speed * density());
+        int seconds = (int) Math.ceil(remaining);
+        String duration = String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60);
+        metrics.setText(percent + "%  •  " + duration + " left"
+            + (playing ? "   •   READING" : "   •   PAUSED"));
+    }
+    private void persistProgress() {
+        if (scriptText == null || scriptScroll == null || displayedScriptId.isEmpty()) return;
+        int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
+        float ratio = max == 0 ? 0 : Math.max(0f, Math.min(1f, (float)(scrollPosition / max)));
+        ScriptStore.prefs(this).edit().putFloat("progress_" + displayedScriptId, ratio).apply();
+    }
+    private void cancelCountdown() {
+        countingDown = false;
+        if (countdownTick != null) handler.removeCallbacks(countdownTick);
+        if (countdownText != null) countdownText.setVisibility(View.GONE);
+    }
+    private void countdown() {
+        cancelCountdown();
+        setPlaying(false);
+        countingDown = true;
+        countdownText.setText("3");
+        countdownText.setVisibility(View.VISIBLE);
+        countdownTick = new Runnable() {
+            int count = 3;
+            @Override public void run() {
+                if (!countingDown || root == null || collapsed) return;
+                count--;
+                if (count > 0) {
+                    countdownText.setText(Integer.toString(count));
+                    handler.postDelayed(this, 1000);
+                } else {
+                    countingDown = false;
+                    countdownText.setVisibility(View.GONE);
+                    startedOnce = true;
+                    setPlaying(true);
+                }
+            }
+        };
+        handler.postDelayed(countdownTick, 1000);
+    }
+    private void togglePlay() {
+        if (countingDown) { cancelCountdown(); return; }
+        if (playing) { setPlaying(false); persistProgress(); return; }
+        if (!startedOnce && ScriptStore.prefs(this).getBoolean("countdown", true)) {
+            countdown();
+        } else {
+            startedOnce = true;
+            setPlaying(true);
+        }
+    }
     private void restart() {
+        cancelCountdown();
+        setPlaying(false);
         scrollPosition = 0;
-        scriptScroll.scrollTo(0, 0);
-        setPlaying(true);
+        if (scriptScroll != null) scriptScroll.scrollTo(0, 0);
+        persistProgress();
+        startedOnce = false;
+        updateProgress();
+        togglePlay();
     }
     private void setPlaying(boolean value) {
         playing = value;
@@ -257,8 +415,11 @@ public final class OverlayService extends Service {
             lastFrame = SystemClock.uptimeMillis();
             handler.post(frame);
         }
+        updateProgress();
     }
     private void collapse() {
+        cancelCountdown();
+        persistProgress();
         setPlaying(false);
         collapsed = true;
         panel.setVisibility(View.GONE);
@@ -274,6 +435,7 @@ public final class OverlayService extends Service {
         panel.setVisibility(View.VISIBLE);
         params.width = panelWidth; params.height = panelHeight;
         clampToScreen();
+        updateProgress();
     }
 
     private View.OnTouchListener dragListener(boolean isBubble) {
@@ -353,6 +515,8 @@ public final class OverlayService extends Service {
         if (root != null) clampToScreen();
     }
     @Override public void onDestroy() {
+        cancelCountdown();
+        persistProgress();
         setPlaying(false);
         handler.removeCallbacksAndMessages(null);
         if (windows != null && root != null) {

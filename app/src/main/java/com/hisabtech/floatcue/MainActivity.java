@@ -16,6 +16,8 @@ import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -26,10 +28,12 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.Date;
@@ -49,13 +53,20 @@ public final class MainActivity extends Activity {
     private static final int PURPLE = 0xff9a76ff;
     private static final int MINT = 0xff91f0c4;
     private static final int DOC_REQUEST = 123;
+    private static final int EXPORT_TXT = 124;
+    private static final int EXPORT_BACKUP = 125;
+    private static final int RESTORE_BACKUP = 126;
 
     private LinearLayout screen, content, navBar;
     private TextView permissionText, stylePreview;
+    private View previewGuide;
     private EditText titleInput, scriptInput;
     private ScriptStore.Script selected;
     private int tab = 0; // Studio, Library, Style
     private boolean editorOpen = false;
+    private final Handler autosaveHandler = new Handler(Looper.getMainLooper());
+    private final Runnable autosaveTask = () -> saveEditor(false);
+    private boolean dirty = false;
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
@@ -87,6 +98,7 @@ public final class MainActivity extends Activity {
         } else if (tab != 0) {
             tab = 0;
             renderTab();
+            renderNav();
         } else super.onBackPressed();
     }
 
@@ -232,10 +244,14 @@ public final class MainActivity extends Activity {
     }
     private void renderTab() {
         if(content==null)return;
-        content.removeAllViews(); permissionText=null;stylePreview=null;
+        content.removeAllViews(); permissionText=null;stylePreview=null;previewGuide=null;
         if(tab==0)renderHome();
         else if(tab==1)renderLibrary();
         else renderStyle();
+        if(android.animation.ValueAnimator.areAnimatorsEnabled()){
+            content.setAlpha(0.0f);content.setTranslationY(dp(8));
+            content.animate().alpha(1f).translationY(0f).setDuration(230).start();
+        }
     }
 
     private void renderHome() {
@@ -262,6 +278,17 @@ public final class MainActivity extends Activity {
         permission.addView(tinyAction("Settings  ›",v->requestOverlayPermission()));
         add(content,permission,12);
         updatePermission();
+        LinearLayout quick=horizontal();
+        TextView create=button("＋  New script",false,v->newScript());
+        LinearLayout.LayoutParams q1=new LinearLayout.LayoutParams(0,dp(50),1);
+        q1.rightMargin=dp(7);
+        quick.addView(create,q1);
+        TextView stop=button("■  Stop overlay",false,v->{
+            stopService(new Intent(this,OverlayService.class));toast("Floating window closed");
+            renderTab();
+        });
+        quick.addView(stop,new LinearLayout.LayoutParams(0,dp(50),1));
+        add(content,quick,10);
 
         sectionHeading(content,"UP NEXT","All scripts  ›",v->{tab=1;renderTab();renderNav();});
         LinearLayout current=vertical();pad(current,17,18,17,18);
@@ -308,6 +335,13 @@ public final class MainActivity extends Activity {
         add(content,text("Your words,\nbeautifully organized.",31,WHITE,true),12);
         add(content,text("Private scripts saved on your phone. Tap any script to edit.",14,MUTED,false),12);
         add(content,button("+   Create new script",true,v->newScript()),20);
+        LinearLayout backupActions=horizontal();
+        TextView backup=button("↓  Back up scripts",false,v->exportBackup());
+        TextView restore=button("↑  Restore backup",false,v->importBackup());
+        LinearLayout.LayoutParams back1=new LinearLayout.LayoutParams(0,dp(50),1);
+        back1.rightMargin=dp(8);backupActions.addView(backup,back1);
+        backupActions.addView(restore,new LinearLayout.LayoutParams(0,dp(50),1));
+        add(content,backupActions,9);
         List<ScriptStore.Script> scripts=ScriptStore.all(this);
         sectionHeading(content,"ALL SCRIPTS  ·  "+scripts.size(),null,null);
         for(ScriptStore.Script s:scripts){
@@ -348,7 +382,7 @@ public final class MainActivity extends Activity {
             });
             add(content,card,9);
         }
-        TextView reassurance=text("●  Offline by design. Your scripts never leave this device.",12,MUTED,false);
+        TextView reassurance=text("●  Offline by design. Your scripts remain on this device unless you export them.",12,MUTED,false);
         add(content,reassurance,21);
     }
 
@@ -367,18 +401,96 @@ public final class MainActivity extends Activity {
         stylePreview.setLineSpacing(dp(7),1.09f);
         pad(stylePreview,17,22,17,20);
         add(previewCard,stylePreview,14);
+        previewGuide = new View(this);
+        previewGuide.setBackground(rounded(PURPLE,3));
+        LinearLayout.LayoutParams eye = new LinearLayout.LayoutParams(-1,dp(3));
+        eye.topMargin = dp(3);
+        previewCard.addView(previewGuide,eye);
         add(content,previewCard,22);
         updateStylePreview();
 
+        sectionHeading(content,"CINEMA THEMES",null,null);
+        LinearLayout themes=horizontal();
+        String[] names={"◼  Midnight","◈  Studio","□  Paper"};
+        int[] swatches={0xff28243e,0xff65478e,0xfff3eee4};
+        int chosen=ScriptStore.prefs(this).getInt("reader_theme",0);
+        for(int index=0;index<3;index++){
+            final int item=index;
+            TextView choice=text(names[index],12,index==2?0xff232132:WHITE,true);
+            choice.setGravity(Gravity.CENTER);
+            choice.setBackground(outlined(swatches[index],16,
+                index==chosen?PURPLE:BORDER));
+            choice.setMinHeight(dp(52));
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(52),1);
+            if(index<2)cp.rightMargin=dp(7);
+            themes.addView(choice,cp);
+            choice.setOnClickListener(v->{
+                ScriptStore.prefs(this).edit().putInt("reader_theme",item).apply();
+                refreshOverlay();renderTab();
+            });
+        }
+        add(content,themes,10);
+
+        sectionHeading(content,"READING TOOLS",null,null);
+        toggleSetting("focus_line","EYE-LEVEL FOCUS GUIDE",
+            "Keep a gentle line near the camera for better eye contact.",true);
+        toggleSetting("countdown","3 · 2 · 1 COUNTDOWN",
+            "Get ready before your first line begins scrolling.",true);
+
+        sectionHeading(content,"TEXT DIRECTION",null,null);
+        LinearLayout directions=horizontal();
+        String[] options={"Auto","Left to right","Right to left"};
+        int selectedDirection=ScriptStore.prefs(this).getInt("text_direction",0);
+        for(int i=0;i<options.length;i++){
+            final int index=i;
+            TextView control=text(options[i],12,i==selectedDirection?WHITE:MUTED,true);
+            control.setGravity(Gravity.CENTER);
+            control.setBackground(outlined(i==selectedDirection?0xff3c3156:SURFACE,13,
+                i==selectedDirection?PURPLE:BORDER));
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(47),1);
+            if(i<2)cp.rightMargin=dp(7);
+            directions.addView(control,cp);
+            control.setOnClickListener(v->{
+                ScriptStore.prefs(this).edit().putInt("text_direction",index).apply();
+                refreshOverlay();renderTab();
+            });
+        }
+        add(content,directions,9);
+
         sectionHeading(content,"TUNING CONTROLS",null,null);
         settingCard("speed","SCROLL SPEED","How quickly your words move",20,250,90," px/s");
-        settingCard("font","FONT SIZE","Readable from near or far",18,64,34," sp");
+        settingCard("font","FONT SIZE","Readable from near or far",18,72,34," sp");
+        settingCard("focus_position","FOCUS LINE POSITION","Where the reading guide sits in the window",18,65,33,"%");
         settingCard("opacity","WINDOW OPACITY","Control how much is visible behind the script",20,95,76,"%");
         add(content,button("▶   Test floating reader",true,v->startOverlay()),22);
-        TextView hint=text("Settings apply immediately to an active floating reader. Some apps may block overlays.",12,MUTED,false);
+        TextView hint=text("Changes apply to an active reader. Camera-app compatibility depends on Android and each app's overlay restrictions.",12,MUTED,false);
         add(content,hint,14);
     }
 
+    private void toggleSetting(String key,String heading,String detail,boolean defaultValue) {
+        LinearLayout card = horizontal();
+        card.setBackground(outlined(SURFACE,17,BORDER));
+        pad(card,14,15,14,15);
+        LinearLayout labels=vertical();
+        TextView title=text(heading,12,WHITE,true);title.setLetterSpacing(.03f);
+        labels.addView(title);
+        TextView description=text(detail,12,MUTED,false);
+        description.setMaxLines(2);
+        add(labels,description,6);
+        card.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
+        Switch toggle=new Switch(this);
+        toggle.setButtonTintList(null);
+        toggle.setChecked(ScriptStore.prefs(this).getBoolean(key,defaultValue));
+        toggle.setThumbTintList(ColorStateList.valueOf(0xffc9b6ff));
+        toggle.setTrackTintList(ColorStateList.valueOf(PURPLE));
+        toggle.setContentDescription(heading);
+        toggle.setOnCheckedChangeListener((button,checked)->{
+            ScriptStore.prefs(this).edit().putBoolean(key,checked).apply();
+            updateStylePreview();refreshOverlay();
+        });
+        card.addView(toggle,new LinearLayout.LayoutParams(dp(56),dp(50)));
+        add(content,card,9);
+    }
     private void settingCard(String key,String title,String detail,int min,int max,int def,String unit) {
         LinearLayout card=vertical();
         card.setBackground(outlined(SURFACE,18,BORDER));
@@ -418,8 +530,20 @@ public final class MainActivity extends Activity {
         if(stylePreview==null)return;
         int size=ScriptStore.prefs(this).getInt("font",34);
         int opacity=ScriptStore.prefs(this).getInt("opacity",76);
+        int theme=ScriptStore.prefs(this).getInt("reader_theme",0);
+        int direction=ScriptStore.prefs(this).getInt("text_direction",0);
         stylePreview.setTextSize(Math.max(16,Math.min(33,size)));
-        stylePreview.setBackground(rounded(Color.argb((int)(opacity*2.55f),43,37,72),16));
+        stylePreview.setTextColor(theme==2?0xff1e2030:WHITE);
+        stylePreview.setTypeface(theme==2?Typeface.SERIF:Typeface.DEFAULT,Typeface.NORMAL);
+        stylePreview.setTextDirection(direction==1?View.TEXT_DIRECTION_LTR:
+            direction==2?View.TEXT_DIRECTION_RTL:View.TEXT_DIRECTION_FIRST_STRONG);
+        stylePreview.setGravity(Gravity.TOP | (direction==2?Gravity.RIGHT:Gravity.START));
+        int color=theme==2?Color.argb((int)(opacity*2.55f),248,243,234):
+            theme==1?Color.argb((int)(opacity*2.55f),64,43,99):
+            Color.argb((int)(opacity*2.55f),43,37,72);
+        stylePreview.setBackground(rounded(color,16));
+        if(previewGuide!=null)previewGuide.setVisibility(
+            ScriptStore.prefs(this).getBoolean("focus_line",true)?View.VISIBLE:View.GONE);
     }
     private void updatePermission() {
         if(permissionText!=null)permissionText.setText(
@@ -498,13 +622,17 @@ public final class MainActivity extends Activity {
         scriptInput.setBackground(outlined(SURFACE,18,BORDER));
         pad(scriptInput,18,20,18,20);
         scriptInput.setText(selected.body);
-        scriptInput.addTextChangedListener(new android.text.TextWatcher(){
+        android.text.TextWatcher watcher = new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s,int st,int c,int after){}
             public void onTextChanged(CharSequence s,int st,int before,int count){
-                wordCountLabel.setText(wordCount(s.toString())+" words");
+                if (scriptInput != null)
+                    wordCountLabel.setText(wordCount(scriptInput.getText().toString())+" words");
+                scheduleAutosave();
             }
-            public void afterTextChanged(android.text.Editable s){}
-        });
+            public void afterTextChanged(android.text.Editable e){}
+        };
+        scriptInput.addTextChangedListener(watcher);
+        titleInput.addTextChangedListener(watcher);
         add(editor,scriptInput,10);
 
         LinearLayout tools=horizontal();
@@ -514,6 +642,7 @@ public final class MainActivity extends Activity {
         half.rightMargin=dp(6);tools.addView(paste,half);
         tools.addView(load,new LinearLayout.LayoutParams(0,dp(50),1));
         add(editor,tools,13);
+        add(editor,button("↗  Export this script as TXT",false,v->exportScript()),9);
 
         TextView danger=tinyAction("Delete this script",v->{
             new AlertDialog.Builder(this)
@@ -540,12 +669,20 @@ public final class MainActivity extends Activity {
         screen.addView(bottom);
     }
 
+    private void scheduleAutosave() {
+        dirty = true;
+        autosaveHandler.removeCallbacks(autosaveTask);
+        if (editorOpen) autosaveHandler.postDelayed(autosaveTask, 850);
+    }
     private void saveEditor(boolean notify) {
+        autosaveHandler.removeCallbacks(autosaveTask);
         if(!editorOpen || titleInput==null || scriptInput==null)return;
+        if (!dirty && !notify) return;
         selected.title=titleInput.getText().toString().trim();
         if(selected.title.isEmpty())selected.title="Untitled script";
         selected.body=scriptInput.getText().toString();
         ScriptStore.save(this,selected);
+        dirty = false;
         refreshOverlay();
         if(notify)toast("Saved on your device");
     }
@@ -570,21 +707,95 @@ public final class MainActivity extends Activity {
         intent.setType("text/plain");
         startActivityForResult(intent,DOC_REQUEST);
     }
-    @Override protected void onActivityResult(int request,int result,Intent data) {
-        super.onActivityResult(request,result,data);
-        if(request!=DOC_REQUEST || result!=RESULT_OK || data==null || data.getData()==null)return;
-        if(!editorOpen)openEditor();
-        try(InputStream in=getContentResolver().openInputStream(data.getData());
+    private void exportScript() {
+        if (editorOpen) saveEditor(false);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        String fileName = selected.title.replaceAll("[^a-zA-Z0-9_-]+", "_");
+        if (fileName.isEmpty()) fileName = "FloatCue_Script";
+        intent.putExtra(Intent.EXTRA_TITLE, fileName + ".txt");
+        startActivityForResult(intent, EXPORT_TXT);
+    }
+    private void exportBackup() {
+        if (editorOpen) saveEditor(false);
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/json");
+        intent.putExtra(Intent.EXTRA_TITLE, "FloatCue-Library-Backup.json");
+        startActivityForResult(intent, EXPORT_BACKUP);
+    }
+    private void importBackup() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"application/json","text/plain"});
+        startActivityForResult(intent, RESTORE_BACKUP);
+    }
+    private String readFile(Uri uri,int limit) throws Exception {
+        try(InputStream in=getContentResolver().openInputStream(uri);
             ByteArrayOutputStream out=new ByteArrayOutputStream()){
-            if(in==null)throw new IllegalArgumentException("Cannot open file");
+            if(in==null)throw new IllegalArgumentException("Unable to open document");
             byte[] chunk=new byte[8192];int size;
             while((size=in.read(chunk))!=-1){
-                if(out.size()+size>1024*1024)throw new IllegalArgumentException("File exceeds 1MB");
+                if(out.size()+size>limit)throw new IllegalArgumentException("Document too large");
                 out.write(chunk,0,size);
             }
-            scriptInput.setText(out.toString(StandardCharsets.UTF_8.name()));
-            toast("Text imported. Save when ready.");
-        }catch(Exception ex){toast("Import failed. Use a TXT file under 1 MB.");}
+            return out.toString(StandardCharsets.UTF_8.name());
+        }
+    }
+    private void writeFile(Uri uri,String value) throws Exception {
+        try(OutputStream out=getContentResolver().openOutputStream(uri,"w")){
+            if(out==null)throw new IllegalArgumentException("Unable to write document");
+            out.write(value.getBytes(StandardCharsets.UTF_8));
+            out.flush();
+        }
+    }
+    @Override protected void onActivityResult(int request,int result,Intent data) {
+        super.onActivityResult(request,result,data);
+        if(result!=RESULT_OK || data==null || data.getData()==null)return;
+        final Uri uri=data.getData();
+        if(request==EXPORT_TXT || request==EXPORT_BACKUP){
+            try {
+                String payload = request==EXPORT_TXT ? selected.body : ScriptStore.exportJson(this);
+                writeFile(uri,payload);
+                toast(request==EXPORT_TXT ? "Script exported to TXT" : "Library backup created");
+            } catch(Exception exception){toast("Export failed. Please choose another folder.");}
+            return;
+        }
+        if(request==DOC_REQUEST){
+            if(!editorOpen)openEditor();
+            try{
+                scriptInput.setText(readFile(uri,1024*1024));
+                scheduleAutosave();
+                toast("Text imported and will be saved");
+            }catch(Exception exception){toast("Import failed. Use a TXT file under 1 MB.");}
+            return;
+        }
+        if(request==RESTORE_BACKUP){
+            try {
+                final String backup=readFile(uri,2*1024*1024);
+                // Explicit user consent; keep a previous local snapshot on restore.
+                new AlertDialog.Builder(this)
+                    .setTitle("Restore FloatCue library?")
+                    .setMessage("This replaces your current scripts. Export a backup first if you want to keep them.")
+                    .setNegativeButton("Cancel",null)
+                    .setPositiveButton("Restore",(dialog,which)->{
+                        try{
+                            int count=ScriptStore.restoreJson(this,backup);
+                            selected=ScriptStore.active(this);
+                            dirty=false;
+                            editorOpen=false;
+                            tab=1;
+                            buildStudio();
+                            refreshOverlay();
+                            toast(count+" scripts restored");
+                        }catch(Exception invalid){
+                            toast("Restore failed: invalid FloatCue backup");
+                        }
+                    }).show();
+            }catch(Exception exception){toast("Could not read backup. Limit is 2 MB.");}
+        }
     }
     private void handleIncoming(Intent intent){
         if(intent==null)return;
