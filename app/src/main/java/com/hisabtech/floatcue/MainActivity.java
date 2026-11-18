@@ -59,6 +59,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout screen, content, navBar;
     private TextView permissionText, stylePreview;
+    private View previewGuide;
     private EditText titleInput, scriptInput;
     private ScriptStore.Script selected;
     private int tab = 0; // Studio, Library, Style
@@ -242,7 +243,7 @@ public final class MainActivity extends Activity {
     }
     private void renderTab() {
         if(content==null)return;
-        content.removeAllViews(); permissionText=null;stylePreview=null;
+        content.removeAllViews(); permissionText=null;stylePreview=null;previewGuide=null;
         if(tab==0)renderHome();
         else if(tab==1)renderLibrary();
         else renderStyle();
@@ -395,18 +396,95 @@ public final class MainActivity extends Activity {
         stylePreview.setLineSpacing(dp(7),1.09f);
         pad(stylePreview,17,22,17,20);
         add(previewCard,stylePreview,14);
+        previewGuide = new View(this);
+        previewGuide.setBackground(rounded(PURPLE,3));
+        LinearLayout.LayoutParams eye = new LinearLayout.LayoutParams(-1,dp(3));
+        eye.topMargin = dp(3);
+        previewCard.addView(previewGuide,eye);
         add(content,previewCard,22);
         updateStylePreview();
 
+        sectionHeading(content,"CINEMA THEMES",null,null);
+        LinearLayout themes=horizontal();
+        String[] names={"◼  Midnight","◈  Studio","□  Paper"};
+        int[] swatches={0xff28243e,0xff65478e,0xfff3eee4};
+        int chosen=ScriptStore.prefs(this).getInt("reader_theme",0);
+        for(int index=0;index<3;index++){
+            final int item=index;
+            TextView choice=text(names[index],12,index==2?0xff232132:WHITE,true);
+            choice.setGravity(Gravity.CENTER);
+            choice.setBackground(outlined(swatches[index],16,
+                index==chosen?PURPLE:BORDER));
+            choice.setMinHeight(dp(52));
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(52),1);
+            if(index<2)cp.rightMargin=dp(7);
+            themes.addView(choice,cp);
+            choice.setOnClickListener(v->{
+                ScriptStore.prefs(this).edit().putInt("reader_theme",item).apply();
+                refreshOverlay();renderTab();
+            });
+        }
+        add(content,themes,10);
+
+        sectionHeading(content,"READING TOOLS",null,null);
+        toggleSetting("focus_line","EYE-LEVEL FOCUS GUIDE",
+            "Keep a gentle line near the camera for better eye contact.",true);
+        toggleSetting("countdown","3 · 2 · 1 COUNTDOWN",
+            "Get ready before your first line begins scrolling.",true);
+
+        sectionHeading(content,"TEXT DIRECTION",null,null);
+        LinearLayout directions=horizontal();
+        String[] options={"Auto","Left to right","Right to left"};
+        int selectedDirection=ScriptStore.prefs(this).getInt("text_direction",0);
+        for(int i=0;i<options.length;i++){
+            final int index=i;
+            TextView control=text(options[i],12,i==selectedDirection?WHITE:MUTED,true);
+            control.setGravity(Gravity.CENTER);
+            control.setBackground(outlined(i==selectedDirection?0xff3c3156:SURFACE,13,
+                i==selectedDirection?PURPLE:BORDER));
+            LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(47),1);
+            if(i<2)cp.rightMargin=dp(7);
+            directions.addView(control,cp);
+            control.setOnClickListener(v->{
+                ScriptStore.prefs(this).edit().putInt("text_direction",index).apply();
+                refreshOverlay();renderTab();
+            });
+        }
+        add(content,directions,9);
+
         sectionHeading(content,"TUNING CONTROLS",null,null);
         settingCard("speed","SCROLL SPEED","How quickly your words move",20,250,90," px/s");
-        settingCard("font","FONT SIZE","Readable from near or far",18,64,34," sp");
+        settingCard("font","FONT SIZE","Readable from near or far",18,72,34," sp");
         settingCard("opacity","WINDOW OPACITY","Control how much is visible behind the script",20,95,76,"%");
         add(content,button("▶   Test floating reader",true,v->startOverlay()),22);
         TextView hint=text("Settings apply immediately to an active floating reader. Some apps may block overlays.",12,MUTED,false);
         add(content,hint,14);
     }
 
+    private void toggleSetting(String key,String heading,String detail,boolean defaultValue) {
+        LinearLayout card = horizontal();
+        card.setBackground(outlined(SURFACE,17,BORDER));
+        pad(card,14,15,14,15);
+        LinearLayout labels=vertical();
+        TextView title=text(heading,12,WHITE,true);title.setLetterSpacing(.03f);
+        labels.addView(title);
+        TextView description=text(detail,12,MUTED,false);
+        description.setMaxLines(2);
+        add(labels,description,6);
+        card.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
+        Switch toggle=new Switch(this);
+        toggle.setButtonTintList(null);
+        toggle.setChecked(ScriptStore.prefs(this).getBoolean(key,defaultValue));
+        toggle.setThumbTintList(ColorStateList.valueOf(0xffc9b6ff));
+        toggle.setTrackTintList(ColorStateList.valueOf(PURPLE));
+        toggle.setContentDescription(heading);
+        toggle.setOnCheckedChangeListener((button,checked)->{
+            ScriptStore.prefs(this).edit().putBoolean(key,checked).apply();
+            updateStylePreview();refreshOverlay();
+        });
+        card.addView(toggle,new LinearLayout.LayoutParams(dp(56),dp(50)));
+        add(content,card,9);
+    }
     private void settingCard(String key,String title,String detail,int min,int max,int def,String unit) {
         LinearLayout card=vertical();
         card.setBackground(outlined(SURFACE,18,BORDER));
@@ -446,8 +524,20 @@ public final class MainActivity extends Activity {
         if(stylePreview==null)return;
         int size=ScriptStore.prefs(this).getInt("font",34);
         int opacity=ScriptStore.prefs(this).getInt("opacity",76);
+        int theme=ScriptStore.prefs(this).getInt("reader_theme",0);
+        int direction=ScriptStore.prefs(this).getInt("text_direction",0);
         stylePreview.setTextSize(Math.max(16,Math.min(33,size)));
-        stylePreview.setBackground(rounded(Color.argb((int)(opacity*2.55f),43,37,72),16));
+        stylePreview.setTextColor(theme==2?0xff1e2030:WHITE);
+        stylePreview.setTypeface(theme==2?Typeface.SERIF:Typeface.DEFAULT,Typeface.NORMAL);
+        stylePreview.setTextDirection(direction==1?View.TEXT_DIRECTION_LTR:
+            direction==2?View.TEXT_DIRECTION_RTL:View.TEXT_DIRECTION_FIRST_STRONG);
+        stylePreview.setGravity(Gravity.TOP | (direction==2?Gravity.RIGHT:Gravity.START));
+        int color=theme==2?Color.argb((int)(opacity*2.55f),248,243,234):
+            theme==1?Color.argb((int)(opacity*2.55f),64,43,99):
+            Color.argb((int)(opacity*2.55f),43,37,72);
+        stylePreview.setBackground(rounded(color,16));
+        if(previewGuide!=null)previewGuide.setVisibility(
+            ScriptStore.prefs(this).getBoolean("focus_line",true)?View.VISIBLE:View.GONE);
     }
     private void updatePermission() {
         if(permissionText!=null)permissionText.setText(
