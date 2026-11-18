@@ -193,6 +193,7 @@ public final class OverlayService extends Service {
         addControl(top, control("×", v -> stopSelf()), 40);
         panel.addView(top, new LinearLayout.LayoutParams(-1, dp(50)));
 
+        readingArea = new FrameLayout(this);
         scriptScroll = new ScrollView(this);
         scriptScroll.setFillViewport(false);
         scriptScroll.setVerticalScrollBarEnabled(false);
@@ -202,7 +203,46 @@ public final class OverlayService extends Service {
         scriptText.setLineSpacing(dp(10), 1.14f);
         scriptText.setPadding(dp(20), dp(13), dp(20), dp(27));
         scriptScroll.addView(scriptText, new ScrollView.LayoutParams(-1, -2));
-        panel.addView(scriptScroll, new LinearLayout.LayoutParams(-1, 0, 1));
+        scriptScroll.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN && playing) setPlaying(false);
+            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                scrollPosition = scriptScroll.getScrollY();
+                updateProgress(); persistProgress();
+            }
+            return false; // let ScrollView handle the actual gesture
+        });
+        readingArea.addView(scriptScroll, new FrameLayout.LayoutParams(-1, -1));
+        focusLine = new View(this);
+        focusLine.setBackground(rounded(0xffb9a2ff, 3));
+        focusLine.setAlpha(.78f);
+        FrameLayout.LayoutParams focusParams = new FrameLayout.LayoutParams(-1, dp(2), Gravity.TOP);
+        focusParams.leftMargin = dp(18); focusParams.rightMargin = dp(18);
+        readingArea.addView(focusLine, focusParams);
+        readingArea.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom) -> {
+            FrameLayout.LayoutParams fp = (FrameLayout.LayoutParams) focusLine.getLayoutParams();
+            int desired = Math.max(dp(32), (bottom - top) / 3);
+            if (fp.topMargin != desired) { fp.topMargin = desired; focusLine.setLayoutParams(fp); }
+        });
+        countdownText = text("3", 56, WHITE, true);
+        countdownText.setGravity(Gravity.CENTER);
+        countdownText.setBackground(rounded(0xee4b3480, 26));
+        countdownText.setElevation(dp(8));
+        countdownText.setVisibility(View.GONE);
+        FrameLayout.LayoutParams countParams = new FrameLayout.LayoutParams(dp(100), dp(100), Gravity.CENTER);
+        readingArea.addView(countdownText, countParams);
+        panel.addView(readingArea, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        metrics = text("0%   •   Ready to read", 11, MUTED, true);
+        metrics.setGravity(Gravity.CENTER_VERTICAL);
+        metrics.setPadding(dp(17), 0, dp(12), 0);
+        panel.addView(metrics, new LinearLayout.LayoutParams(-1, dp(19)));
+        progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1000);
+        progress.setProgressTintList(ColorStateList.valueOf(PURPLE));
+        progress.setProgressBackgroundTintList(ColorStateList.valueOf(0xff49405e));
+        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(3));
+        progressParams.leftMargin = dp(17); progressParams.rightMargin = dp(17);
+        panel.addView(progress, progressParams);
 
         LinearLayout footer = new LinearLayout(this);
         footer.setGravity(Gravity.CENTER_VERTICAL);
@@ -244,17 +284,41 @@ public final class OverlayService extends Service {
         speed = ScriptStore.prefs(this).getInt("speed", 90);
         fontSp = ScriptStore.prefs(this).getInt("font", 34);
         scriptText.setTextSize(fontSp);
-        String script = ScriptStore.active(this).body;
+        ScriptStore.Script active = ScriptStore.active(this);
+        String script = active.body;
+        final boolean newScript = !active.id.equals(displayedScriptId);
+        if (newScript) {
+            cancelCountdown();
+            setPlaying(false);
+            displayedScriptId = active.id;
+            startedOnce = false;
+        }
         scriptText.setText((script == null || script.trim().isEmpty()) ?
             "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n");
         int opacity = ScriptStore.prefs(this).getInt("opacity", 76);
-        int alpha = (int)(255 * opacity / 100f);
-        panel.setBackground(rounded(Color.argb(alpha, 22, 20, 39), 22));
+        int alpha = Math.min(255, Math.max(60, (int)(255 * opacity / 100f)));
+        int theme = ScriptStore.prefs(this).getInt("reader_theme", 0);
+        int background = theme == 2 ? Color.argb(alpha, 246, 244, 236)
+            : theme == 1 ? Color.argb(alpha, 44, 32, 71)
+            : Color.argb(alpha, 22, 20, 39);
+        panel.setBackground(rounded(background, 22));
+        scriptText.setTextColor(theme == 2 ? 0xff181822 : WHITE);
+        scriptText.setTypeface(Typeface.create(theme == 2 ? "serif" : "sans-serif", Typeface.NORMAL));
+        focusLine.setVisibility(ScriptStore.prefs(this).getBoolean("focus_line", true)
+            ? View.VISIBLE : View.GONE);
+        int direction = ScriptStore.prefs(this).getInt("text_direction", 0);
+        scriptText.setTextDirection(direction == 1 ? View.TEXT_DIRECTION_LTR
+            : direction == 2 ? View.TEXT_DIRECTION_RTL : View.TEXT_DIRECTION_FIRST_STRONG);
+        scriptText.setGravity(Gravity.TOP | (direction == 2 ? Gravity.RIGHT : Gravity.START));
         status.setText((int)speed + " px/s    •    RESIZE ↘");
         scriptScroll.post(() -> {
             int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
-            scrollPosition = Math.min(scrollPosition, max);
+            if (newScript) {
+                float ratio = ScriptStore.prefs(this).getFloat("progress_" + displayedScriptId, 0f);
+                scrollPosition = Math.max(0, Math.min(max, ratio * max));
+            } else scrollPosition = Math.max(0, Math.min(max, scrollPosition));
             scriptScroll.scrollTo(0, (int)scrollPosition);
+            updateProgress();
         });
     }
     private void changeFont(int amount) {
