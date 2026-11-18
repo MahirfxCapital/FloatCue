@@ -331,10 +331,72 @@ public final class OverlayService extends Service {
         ScriptStore.prefs(this).edit().putInt("speed", (int)speed).apply();
         if (status != null) status.setText((int)speed + " px/s    •    RESIZE ↘");
     }
+    private void updateProgress() {
+        if (scriptScroll == null || scriptText == null || metrics == null) return;
+        int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
+        int percent = max == 0 ? 100 : (int) Math.min(100, Math.max(0, 100d * scrollPosition / max));
+        if (progress != null) progress.setProgress(percent * 10);
+        double remaining = max == 0 ? 0 : Math.max(0, max - scrollPosition) /
+            Math.max(1d, speed * density());
+        int seconds = (int) Math.ceil(remaining);
+        String duration = String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60);
+        metrics.setText(percent + "%  •  " + duration + " left"
+            + (playing ? "   •   READING" : "   •   PAUSED"));
+    }
+    private void persistProgress() {
+        if (scriptText == null || scriptScroll == null || displayedScriptId.isEmpty()) return;
+        int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
+        float ratio = max == 0 ? 0 : Math.max(0f, Math.min(1f, (float)(scrollPosition / max)));
+        ScriptStore.prefs(this).edit().putFloat("progress_" + displayedScriptId, ratio).apply();
+    }
+    private void cancelCountdown() {
+        countingDown = false;
+        if (countdownTick != null) handler.removeCallbacks(countdownTick);
+        if (countdownText != null) countdownText.setVisibility(View.GONE);
+    }
+    private void countdown() {
+        cancelCountdown();
+        setPlaying(false);
+        countingDown = true;
+        countdownText.setText("3");
+        countdownText.setVisibility(View.VISIBLE);
+        countdownTick = new Runnable() {
+            int count = 3;
+            @Override public void run() {
+                if (!countingDown || root == null || collapsed) return;
+                count--;
+                if (count > 0) {
+                    countdownText.setText(Integer.toString(count));
+                    handler.postDelayed(this, 1000);
+                } else {
+                    countingDown = false;
+                    countdownText.setVisibility(View.GONE);
+                    startedOnce = true;
+                    setPlaying(true);
+                }
+            }
+        };
+        handler.postDelayed(countdownTick, 1000);
+    }
+    private void togglePlay() {
+        if (countingDown) { cancelCountdown(); return; }
+        if (playing) { setPlaying(false); persistProgress(); return; }
+        if (!startedOnce && ScriptStore.prefs(this).getBoolean("countdown", true)) {
+            countdown();
+        } else {
+            startedOnce = true;
+            setPlaying(true);
+        }
+    }
     private void restart() {
+        cancelCountdown();
+        setPlaying(false);
         scrollPosition = 0;
-        scriptScroll.scrollTo(0, 0);
-        setPlaying(true);
+        if (scriptScroll != null) scriptScroll.scrollTo(0, 0);
+        persistProgress();
+        startedOnce = false;
+        updateProgress();
+        togglePlay();
     }
     private void setPlaying(boolean value) {
         playing = value;
@@ -344,8 +406,11 @@ public final class OverlayService extends Service {
             lastFrame = SystemClock.uptimeMillis();
             handler.post(frame);
         }
+        updateProgress();
     }
     private void collapse() {
+        cancelCountdown();
+        persistProgress();
         setPlaying(false);
         collapsed = true;
         panel.setVisibility(View.GONE);
@@ -361,6 +426,7 @@ public final class OverlayService extends Service {
         panel.setVisibility(View.VISIBLE);
         params.width = panelWidth; params.height = panelHeight;
         clampToScreen();
+        updateProgress();
     }
 
     private View.OnTouchListener dragListener(boolean isBubble) {
@@ -440,6 +506,8 @@ public final class OverlayService extends Service {
         if (root != null) clampToScreen();
     }
     @Override public void onDestroy() {
+        cancelCountdown();
+        persistProgress();
         setPlaying(false);
         handler.removeCallbacksAndMessages(null);
         if (windows != null && root != null) {
