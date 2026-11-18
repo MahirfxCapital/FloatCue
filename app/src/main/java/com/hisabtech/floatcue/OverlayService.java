@@ -218,10 +218,10 @@ public final class OverlayService extends Service {
         FrameLayout.LayoutParams focusParams = new FrameLayout.LayoutParams(-1, dp(2), Gravity.TOP);
         focusParams.leftMargin = dp(18); focusParams.rightMargin = dp(18);
         readingArea.addView(focusLine, focusParams);
-        readingArea.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom) -> {
+        readingArea.addOnLayoutChangeListener((v,left,topEdge,right,bottom,oldLeft,oldTop,oldRight,oldBottom) -> {
             FrameLayout.LayoutParams fp = (FrameLayout.LayoutParams) focusLine.getLayoutParams();
             int fraction = ScriptStore.prefs(this).getInt("focus_position", 33);
-            int desired = Math.max(dp(22), (bottom - top) * fraction / 100);
+            int desired = Math.max(dp(22), (bottom - topEdge) * fraction / 100);
             if (fp.topMargin != desired) { fp.topMargin = desired; focusLine.setLayoutParams(fp); }
         });
         countdownText = text("3", 56, WHITE, true);
