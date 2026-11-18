@@ -220,7 +220,8 @@ public final class OverlayService extends Service {
         readingArea.addView(focusLine, focusParams);
         readingArea.addOnLayoutChangeListener((v,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom) -> {
             FrameLayout.LayoutParams fp = (FrameLayout.LayoutParams) focusLine.getLayoutParams();
-            int desired = Math.max(dp(32), (bottom - top) / 3);
+            int fraction = ScriptStore.prefs(this).getInt("focus_position", 33);
+            int desired = Math.max(dp(22), (bottom - top) * fraction / 100);
             if (fp.topMargin != desired) { fp.topMargin = desired; focusLine.setLayoutParams(fp); }
         });
         countdownText = text("3", 56, WHITE, true);
@@ -293,8 +294,10 @@ public final class OverlayService extends Service {
             displayedScriptId = active.id;
             startedOnce = false;
         }
-        scriptText.setText((script == null || script.trim().isEmpty()) ?
-            "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n");
+        String display = (script == null || script.trim().isEmpty()) ?
+            "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n";
+        // Avoid recreating text and restarting layout on every slider change.
+        if (!display.contentEquals(scriptText.getText())) scriptText.setText(display);
         int opacity = ScriptStore.prefs(this).getInt("opacity", 76);
         int alpha = Math.min(255, Math.max(60, (int)(255 * opacity / 100f)));
         int theme = ScriptStore.prefs(this).getInt("reader_theme", 0);
@@ -306,6 +309,12 @@ public final class OverlayService extends Service {
         scriptText.setTypeface(Typeface.create(theme == 2 ? "serif" : "sans-serif", Typeface.NORMAL));
         focusLine.setVisibility(ScriptStore.prefs(this).getBoolean("focus_line", true)
             ? View.VISIBLE : View.GONE);
+        if (readingArea.getHeight() > 0) {
+            FrameLayout.LayoutParams fp=(FrameLayout.LayoutParams) focusLine.getLayoutParams();
+            int position=Math.max(dp(22), readingArea.getHeight()
+                * ScriptStore.prefs(this).getInt("focus_position", 33) / 100);
+            if (fp.topMargin!=position) { fp.topMargin=position; focusLine.setLayoutParams(fp); }
+        }
         int direction = ScriptStore.prefs(this).getInt("text_direction", 0);
         scriptText.setTextDirection(direction == 1 ? View.TEXT_DIRECTION_LTR
             : direction == 2 ? View.TEXT_DIRECTION_RTL : View.TEXT_DIRECTION_FIRST_STRONG);
