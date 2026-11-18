@@ -16,6 +16,8 @@ import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -26,10 +28,12 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.text.DateFormat;
 import java.util.Date;
@@ -49,6 +53,9 @@ public final class MainActivity extends Activity {
     private static final int PURPLE = 0xff9a76ff;
     private static final int MINT = 0xff91f0c4;
     private static final int DOC_REQUEST = 123;
+    private static final int EXPORT_TXT = 124;
+    private static final int EXPORT_BACKUP = 125;
+    private static final int RESTORE_BACKUP = 126;
 
     private LinearLayout screen, content, navBar;
     private TextView permissionText, stylePreview;
@@ -56,6 +63,9 @@ public final class MainActivity extends Activity {
     private ScriptStore.Script selected;
     private int tab = 0; // Studio, Library, Style
     private boolean editorOpen = false;
+    private final Handler autosaveHandler = new Handler(Looper.getMainLooper());
+    private final Runnable autosaveTask = () -> saveEditor(false);
+    private boolean dirty = false;
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
@@ -262,6 +272,17 @@ public final class MainActivity extends Activity {
         permission.addView(tinyAction("Settings  ›",v->requestOverlayPermission()));
         add(content,permission,12);
         updatePermission();
+        LinearLayout quick=horizontal();
+        TextView create=button("＋  New script",false,v->newScript());
+        LinearLayout.LayoutParams q1=new LinearLayout.LayoutParams(0,dp(50),1);
+        q1.rightMargin=dp(7);
+        quick.addView(create,q1);
+        TextView stop=button("■  Stop overlay",false,v->{
+            stopService(new Intent(this,OverlayService.class));toast("Floating window closed");
+            renderTab();
+        });
+        quick.addView(stop,new LinearLayout.LayoutParams(0,dp(50),1));
+        add(content,quick,10);
 
         sectionHeading(content,"UP NEXT","All scripts  ›",v->{tab=1;renderTab();renderNav();});
         LinearLayout current=vertical();pad(current,17,18,17,18);
@@ -308,6 +329,13 @@ public final class MainActivity extends Activity {
         add(content,text("Your words,\nbeautifully organized.",31,WHITE,true),12);
         add(content,text("Private scripts saved on your phone. Tap any script to edit.",14,MUTED,false),12);
         add(content,button("+   Create new script",true,v->newScript()),20);
+        LinearLayout backupActions=horizontal();
+        TextView backup=button("↓  Back up scripts",false,v->exportBackup());
+        TextView restore=button("↑  Restore backup",false,v->importBackup());
+        LinearLayout.LayoutParams back1=new LinearLayout.LayoutParams(0,dp(50),1);
+        back1.rightMargin=dp(8);backupActions.addView(backup,back1);
+        backupActions.addView(restore,new LinearLayout.LayoutParams(0,dp(50),1));
+        add(content,backupActions,9);
         List<ScriptStore.Script> scripts=ScriptStore.all(this);
         sectionHeading(content,"ALL SCRIPTS  ·  "+scripts.size(),null,null);
         for(ScriptStore.Script s:scripts){
@@ -498,13 +526,17 @@ public final class MainActivity extends Activity {
         scriptInput.setBackground(outlined(SURFACE,18,BORDER));
         pad(scriptInput,18,20,18,20);
         scriptInput.setText(selected.body);
-        scriptInput.addTextChangedListener(new android.text.TextWatcher(){
+        android.text.TextWatcher watcher = new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s,int st,int c,int after){}
             public void onTextChanged(CharSequence s,int st,int before,int count){
-                wordCountLabel.setText(wordCount(s.toString())+" words");
+                if (scriptInput != null)
+                    wordCountLabel.setText(wordCount(scriptInput.getText().toString())+" words");
+                scheduleAutosave();
             }
-            public void afterTextChanged(android.text.Editable s){}
-        });
+            public void afterTextChanged(android.text.Editable e){}
+        };
+        scriptInput.addTextChangedListener(watcher);
+        titleInput.addTextChangedListener(watcher);
         add(editor,scriptInput,10);
 
         LinearLayout tools=horizontal();
@@ -514,6 +546,7 @@ public final class MainActivity extends Activity {
         half.rightMargin=dp(6);tools.addView(paste,half);
         tools.addView(load,new LinearLayout.LayoutParams(0,dp(50),1));
         add(editor,tools,13);
+        add(editor,button("↗  Export this script as TXT",false,v->exportScript()),9);
 
         TextView danger=tinyAction("Delete this script",v->{
             new AlertDialog.Builder(this)
@@ -540,12 +573,20 @@ public final class MainActivity extends Activity {
         screen.addView(bottom);
     }
 
+    private void scheduleAutosave() {
+        dirty = true;
+        autosaveHandler.removeCallbacks(autosaveTask);
+        if (editorOpen) autosaveHandler.postDelayed(autosaveTask, 850);
+    }
     private void saveEditor(boolean notify) {
+        autosaveHandler.removeCallbacks(autosaveTask);
         if(!editorOpen || titleInput==null || scriptInput==null)return;
+        if (!dirty && !notify) return;
         selected.title=titleInput.getText().toString().trim();
         if(selected.title.isEmpty())selected.title="Untitled script";
         selected.body=scriptInput.getText().toString();
         ScriptStore.save(this,selected);
+        dirty = false;
         refreshOverlay();
         if(notify)toast("Saved on your device");
     }
