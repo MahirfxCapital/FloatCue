@@ -247,6 +247,10 @@ public final class MainActivity extends Activity {
         if(tab==0)renderHome();
         else if(tab==1)renderLibrary();
         else renderStyle();
+        if(android.animation.ValueAnimator.areAnimatorsEnabled()){
+            content.setAlpha(0.0f);content.setTranslationY(dp(8));
+            content.animate().alpha(1f).translationY(0f).setDuration(230).start();
+        }
     }
 
     private void renderHome() {
@@ -377,7 +381,7 @@ public final class MainActivity extends Activity {
             });
             add(content,card,9);
         }
-        TextView reassurance=text("●  Offline by design. Your scripts never leave this device.",12,MUTED,false);
+        TextView reassurance=text("●  Offline by design. Your scripts remain on this device unless you export them.",12,MUTED,false);
         add(content,reassurance,21);
     }
 
@@ -455,9 +459,10 @@ public final class MainActivity extends Activity {
         sectionHeading(content,"TUNING CONTROLS",null,null);
         settingCard("speed","SCROLL SPEED","How quickly your words move",20,250,90," px/s");
         settingCard("font","FONT SIZE","Readable from near or far",18,72,34," sp");
+        settingCard("focus_position","FOCUS LINE POSITION","Where the reading guide sits in the window",18,65,33,"%");
         settingCard("opacity","WINDOW OPACITY","Control how much is visible behind the script",20,95,76,"%");
         add(content,button("▶   Test floating reader",true,v->startOverlay()),22);
-        TextView hint=text("Settings apply immediately to an active floating reader. Some apps may block overlays.",12,MUTED,false);
+        TextView hint=text("Changes apply to an active reader. Camera-app compatibility depends on Android and each app's overlay restrictions.",12,MUTED,false);
         add(content,hint,14);
     }
 
