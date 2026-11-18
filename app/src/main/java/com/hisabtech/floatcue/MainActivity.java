@@ -98,6 +98,7 @@ public final class MainActivity extends Activity {
         } else if (tab != 0) {
             tab = 0;
             renderTab();
+            renderNav();
         } else super.onBackPressed();
     }
 
