@@ -2,13 +2,17 @@ package com.hisabtech.floatcue;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -16,8 +20,9 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
+import android.view.WindowManager;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -26,25 +31,39 @@ import android.widget.Toast;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.text.DateFormat;
+import java.util.Date;
+import java.util.List;
 
-/** Offline-first native script editor for FloatCue. */
+/**
+ * FloatCue Signature Studio.
+ * A real native, offline-first Android UI: no browser wrapper and no remote assets.
+ */
 public final class MainActivity extends Activity {
-    private static final int BG = Color.rgb(15, 17, 27);
-    private static final int SURFACE = Color.rgb(28, 31, 46);
-    private static final int WHITE = Color.rgb(248, 248, 255);
-    private static final int MUTED = Color.rgb(174, 180, 205);
-    private static final int PURPLE = Color.rgb(144, 105, 252);
+    private static final int BG = 0xff0d1019;
+    private static final int SURFACE = 0xff191d2b;
+    private static final int SURFACE_HIGH = 0xff222537;
+    private static final int BORDER = 0xff37394c;
+    private static final int WHITE = 0xfff7f5ff;
+    private static final int MUTED = 0xffa5abc2;
+    private static final int PURPLE = 0xff9a76ff;
+    private static final int MINT = 0xff91f0c4;
     private static final int DOC_REQUEST = 123;
 
-    private LinearLayout root, scriptList;
+    private LinearLayout screen, content, navBar;
+    private TextView permissionText, stylePreview;
     private EditText titleInput, scriptInput;
-    private TextView permissionLabel, speedLabel, fontLabel, opacityLabel;
     private ScriptStore.Script selected;
+    private int tab = 0; // Studio, Library, Style
+    private boolean editorOpen = false;
 
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
+        getWindow().setStatusBarColor(BG);
+        getWindow().setNavigationBarColor(BG);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         selected = ScriptStore.active(this);
-        buildUi();
+        buildStudio();
         handleIncoming(getIntent());
     }
     @Override protected void onNewIntent(Intent intent) {
@@ -54,258 +73,561 @@ public final class MainActivity extends Activity {
     }
     @Override protected void onResume() {
         super.onResume();
-        updatePermissionLabel();
+        if (!editorOpen) updatePermission();
     }
-    private void updatePermissionLabel() {
-        if (permissionLabel != null) permissionLabel.setText(
-            Settings.canDrawOverlays(this) ? "● Overlay access enabled" : "○ Overlay access required");
+    @Override protected void onPause() {
+        if (editorOpen) saveEditor(false);
+        super.onPause();
+    }
+    @Override public void onBackPressed() {
+        if (editorOpen) {
+            saveEditor(false);
+            editorOpen = false;
+            buildStudio();
+        } else if (tab != 0) {
+            tab = 0;
+            renderTab();
+        } else super.onBackPressed();
     }
 
     private int dp(float v) { return (int)(v * getResources().getDisplayMetrics().density + .5f); }
-    private GradientDrawable shape(int color, int radius) {
+    private GradientDrawable rounded(int color, int radius) {
         GradientDrawable d = new GradientDrawable();
-        d.setColor(color); d.setCornerRadius(dp(radius)); return d;
+        d.setColor(color); d.setCornerRadius(dp(radius));
+        return d;
     }
-    private TextView text(String value, int sp, int color, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(value); t.setTextSize(sp); t.setTextColor(color);
-        if (bold) t.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        return t;
+    private GradientDrawable outlined(int color, int radius, int edge) {
+        GradientDrawable d = rounded(color, radius);
+        d.setStroke(dp(1), edge);
+        return d;
     }
-    private LinearLayout column() {
+    private GradientDrawable gradient(int color1, int color2, int radius) {
+        GradientDrawable d = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{color1,color2});
+        d.setCornerRadius(dp(radius));
+        return d;
+    }
+    private Drawable touchBackground(Drawable background) {
+        return new RippleDrawable(ColorStateList.valueOf(0x44ffffff), background, null);
+    }
+    private LinearLayout vertical() {
         LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-        return v;
+        v.setOrientation(LinearLayout.VERTICAL); return v;
     }
-    private LinearLayout row() {
+    private LinearLayout horizontal() {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.HORIZONTAL);
         v.setGravity(Gravity.CENTER_VERTICAL);
         return v;
     }
-    private void pad(View v, int l, int t, int r, int b) {
-        v.setPadding(dp(l), dp(t), dp(r), dp(b));
+    private TextView text(String s,int size,int color,boolean bold) {
+        TextView t = new TextView(this);
+        t.setText(s); t.setTextSize(size); t.setTextColor(color);
+        t.setIncludeFontPadding(false);
+        t.setFontFeatureSettings("kern");
+        t.setTypeface(Typeface.create(bold ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        return t;
     }
-    private void margin(LinearLayout parent, View child, int top) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2);
-        p.topMargin = dp(top); parent.addView(child, p);
+    private void pad(View v,int l,int t,int r,int b) {
+        v.setPadding(dp(l),dp(t),dp(r),dp(b));
     }
-    private Button button(String label, boolean primary, View.OnClickListener action) {
-        Button b = new Button(this);
-        b.setAllCaps(false); b.setText(label); b.setTextSize(14);
-        b.setTextColor(WHITE);
-        b.setBackground(shape(primary ? PURPLE : SURFACE, 16));
-        b.setMinHeight(dp(48)); b.setOnClickListener(action);
+    private void add(LinearLayout parent,View child,int top) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1,-2);
+        lp.topMargin=dp(top);
+        parent.addView(child,lp);
+    }
+    private void addWeighted(LinearLayout parent,View child,int weight) {
+        parent.addView(child,new LinearLayout.LayoutParams(0,-2,weight));
+    }
+    private TextView caption(String s) {
+        TextView t = text(s,11,MUTED,true);
+        t.setLetterSpacing(.14f);
+        return t;
+    }
+    private TextView pill(String s,int foreground,int background) {
+        TextView t=text(s,11,foreground,true);
+        t.setBackground(rounded(background,30));
+        pad(t,12,8,12,8);
+        t.setGravity(Gravity.CENTER);
+        return t;
+    }
+    private TextView button(String s,boolean primary,View.OnClickListener onClick) {
+        TextView b=text(s,15,primary?0xff110e1b:WHITE,true);
+        b.setGravity(Gravity.CENTER);
+        b.setMinHeight(dp(54));
+        b.setBackground(touchBackground(primary
+            ? gradient(0xffc4adff,0xff9170ff,17)
+            : outlined(SURFACE_HIGH,17,BORDER)));
+        pad(b,14,14,14,14);
+        b.setOnClickListener(onClick);
+        b.setClickable(true); b.setFocusable(true);
+        b.setContentDescription(s);
         return b;
     }
-    private void putRowButton(LinearLayout r, Button b, float weight) {
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(0, dp(50), weight);
-        p.rightMargin = dp(6); r.addView(b, p);
+    private TextView tinyAction(String s,View.OnClickListener onClick) {
+        TextView v = text(s,13,PURPLE,true);
+        pad(v,8,12,8,12);
+        v.setOnClickListener(onClick);
+        v.setClickable(true);
+        return v;
     }
-    private void buildUi() {
-        getWindow().setStatusBarColor(BG);
-        getWindow().setNavigationBarColor(BG);
-        ScrollView scroller = new ScrollView(this);
-        scroller.setFillViewport(true);
-        scroller.setBackgroundColor(BG);
-        root = column(); pad(root, 20, 24, 20, 36);
-        scroller.addView(root);
-        setContentView(scroller);
-
-        TextView eyebrow = text("FLOATCUE  /  CREATOR STUDIO", 11, PURPLE, true);
-        root.addView(eyebrow);
-        TextView heading = text("Speak naturally.\nRead beautifully.", 30, WHITE, true);
-        margin(root, heading, 12);
-        TextView intro = text("Your floating teleprompter stays with you over compatible apps, cameras and live-streaming screens.", 14, MUTED, false);
-        margin(root, intro, 10);
-
-        permissionLabel = text("", 13, MUTED, false);
-        margin(root, permissionLabel, 20);
-        Button permission = button("Allow floating window", false, v -> {
-            Intent i = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:" + getPackageName()));
-            startActivity(i);
-        });
-        margin(root, permission, 10);
-
-        TextView scriptsLabel = text("SCRIPTS", 12, MUTED, true);
-        margin(root, scriptsLabel, 24);
-        scriptList = column();
-        margin(root, scriptList, 8);
-
-        titleInput = new EditText(this);
-        titleInput.setSingleLine(true);
-        titleInput.setTextColor(WHITE); titleInput.setHintTextColor(MUTED);
-        titleInput.setTextSize(17); titleInput.setHint("Script title");
-        titleInput.setBackground(shape(SURFACE, 14));
-        pad(titleInput, 16, 12, 16, 12);
-        margin(root, titleInput, 16);
-
-        scriptInput = new EditText(this);
-        scriptInput.setGravity(Gravity.TOP | Gravity.START);
-        scriptInput.setMinLines(8);
-        scriptInput.setTextSize(18);
-        scriptInput.setTextColor(WHITE); scriptInput.setHintTextColor(MUTED);
-        scriptInput.setHint("Paste or write your speech here…");
-        scriptInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE |
-                                  InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
-        scriptInput.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);
-        scriptInput.setBackground(shape(SURFACE, 18));
-        pad(scriptInput, 18, 16, 18, 18);
-        margin(root, scriptInput, 10);
-
-        LinearLayout row1 = row();
-        putRowButton(row1, button("Paste", false, v -> paste()), 1);
-        putRowButton(row1, button("Import TXT", false, v -> importText()), 1);
-        putRowButton(row1, button("Save", true, v -> save()), 1);
-        margin(root, row1, 12);
-
-        LinearLayout row2 = row();
-        putRowButton(row2, button("+ New", false, v -> {
-            save(); selected = ScriptStore.create(this); bindScript(); renderList();
-        }), 1);
-        putRowButton(row2, button("Delete", false, v -> {
-            ScriptStore.delete(this, selected.id);
-            selected = ScriptStore.active(this); bindScript(); renderList();
-            toast("Script deleted");
-        }), 1);
-        margin(root, row2, 6);
-
-        TextView appearance = text("READING PREFERENCES", 12, MUTED, true);
-        margin(root, appearance, 24);
-        speedLabel = text("", 14, WHITE, true);
-        margin(root, speedLabel, 12);
-        addSeek("speed", 20, 250, 90, speedLabel, "Scroll speed", " px/sec");
-        fontLabel = text("", 14, WHITE, true);
-        margin(root, fontLabel, 10);
-        addSeek("font", 18, 64, 34, fontLabel, "Font size", " sp");
-        opacityLabel = text("", 14, WHITE, true);
-        margin(root, opacityLabel, 10);
-        addSeek("opacity", 20, 95, 76, opacityLabel, "Panel opacity", "%");
-
-        Button start = button("▶ Start floating teleprompter", true, v -> startOverlay());
-        margin(root, start, 22);
-        Button stop = button("Stop floating window", false, v ->
-            stopService(new Intent(this, OverlayService.class)));
-        margin(root, stop, 8);
-        TextView tip = text("Tip: Start FloatCue, then open TikTok, Facebook or your phone camera. Drag the top bar to move it. The overlay is not guaranteed on every protected screen.", 13, MUTED, false);
-        margin(root, tip, 18);
-
-        bindScript(); renderList(); updatePermissionLabel();
+    private void sectionHeading(LinearLayout parent,String label,String action,View.OnClickListener click) {
+        LinearLayout line=horizontal();
+        addWeighted(line,caption(label),1);
+        if(action!=null) line.addView(tinyAction(action,click));
+        add(parent,line,24);
     }
-    private void addSeek(String key, int min, int max, int def, TextView label, String name, String suffix) {
-        int saved = ScriptStore.prefs(this).getInt(key, def);
-        label.setText(name + ": " + saved + suffix);
-        SeekBar seek = new SeekBar(this);
-        seek.setMax(max - min); seek.setProgress(Math.max(0, Math.min(max-min, saved-min)));
-        seek.setProgressTintList(android.content.res.ColorStateList.valueOf(PURPLE));
-        seek.setThumbTintList(android.content.res.ColorStateList.valueOf(PURPLE));
-        margin(root, seek, 4);
-        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            public void onStartTrackingTouch(SeekBar s) { }
-            public void onStopTrackingTouch(SeekBar s) { }
-            public void onProgressChanged(SeekBar s, int progress, boolean fromUser) {
-                int value = progress + min;
-                label.setText(name + ": " + value + suffix);
-                if (fromUser) {
-                    ScriptStore.prefs(MainActivity.this).edit().putInt(key, value).apply();
+    private void buildStudio() {
+        editorOpen=false;
+        titleInput=null; scriptInput=null;
+        screen=vertical();screen.setBackgroundColor(BG);
+        setContentView(screen);
+        LinearLayout header=horizontal();
+        pad(header,20,17,20,13);
+        TextView symbol=text("✦",23,0xff211630,true);
+        symbol.setGravity(Gravity.CENTER);
+        symbol.setBackground(gradient(0xffcbb7ff,0xff9973f5,14));
+        header.addView(symbol,new LinearLayout.LayoutParams(dp(44),dp(44)));
+        LinearLayout name=vertical(); pad(name,12,0,0,0);
+        TextView wordmark=text("FloatCue",21,WHITE,true);
+        TextView line=text("CREATOR STUDIO",9,MUTED,true);line.setLetterSpacing(.21f);
+        name.addView(wordmark);add(name,line,4);
+        header.addView(name,new LinearLayout.LayoutParams(0,-2,1));
+        TextView plus=text("+",25,WHITE,false);plus.setGravity(Gravity.CENTER);
+        plus.setBackground(touchBackground(outlined(SURFACE,15,BORDER)));
+        plus.setContentDescription("Create new script");
+        header.addView(plus,new LinearLayout.LayoutParams(dp(45),dp(45)));
+        plus.setOnClickListener(v->newScript());
+        screen.addView(header,new LinearLayout.LayoutParams(-1,-2));
+
+        ScrollView scroller=new ScrollView(this);
+        scroller.setFillViewport(true);scroller.setClipToPadding(false);
+        scroller.setVerticalScrollBarEnabled(false);
+        content=vertical();
+        pad(content,20,8,20,32);
+        scroller.addView(content);
+        screen.addView(scroller,new LinearLayout.LayoutParams(-1,0,1));
+
+        navBar=horizontal();
+        navBar.setBackground(outlined(0xff111521,22,0xff282b3c));
+        pad(navBar,8,8,8,8);
+        LinearLayout.LayoutParams navMargin=new LinearLayout.LayoutParams(-1,dp(64));
+        navMargin.setMargins(dp(16),0,dp(16),dp(12));
+        screen.addView(navBar,navMargin);
+        renderNav();
+        renderTab();
+    }
+    private void renderNav() {
+        if(navBar==null)return;
+        navBar.removeAllViews();
+        String[] labels={"◈   Studio","▤   Scripts","◐   Style"};
+        for(int i=0;i<labels.length;i++) {
+            final int index=i;
+            TextView tabButton=text(labels[i],12,i==tab?WHITE:MUTED,true);
+            tabButton.setGravity(Gravity.CENTER);
+            tabButton.setBackground(touchBackground(rounded(i==tab?SURFACE_HIGH:0xff111521,16)));
+            tabButton.setOnClickListener(v->{ tab=index; renderTab(); renderNav(); });
+            tabButton.setContentDescription(labels[i]);
+            navBar.addView(tabButton,new LinearLayout.LayoutParams(0,-1,1));
+        }
+    }
+    private void renderTab() {
+        if(content==null)return;
+        content.removeAllViews(); permissionText=null;stylePreview=null;
+        if(tab==0)renderHome();
+        else if(tab==1)renderLibrary();
+        else renderStyle();
+    }
+
+    private void renderHome() {
+        TextView eyebrow=caption("YOUR WORDS  /  YOUR SCREEN  /  YOUR FLOW");
+        eyebrow.setTextColor(PURPLE);
+        add(content,eyebrow,13);
+        TextView heading=text("Every word.\nRight on cue.",35,WHITE,true);
+        heading.setLineSpacing(dp(1),1f);
+        add(content,heading,13);
+        TextView description=text("A beautiful way to speak on camera without losing your place.",15,MUTED,false);
+        description.setLineSpacing(dp(3),1f);
+        add(content,description,12);
+        StudioGraphics illustration=new StudioGraphics(this);
+        LinearLayout.LayoutParams artLp=new LinearLayout.LayoutParams(-1,dp(218));
+        artLp.topMargin=dp(21);
+        illustration.setContentDescription("Illustration of a floating script over a smartphone camera");
+        content.addView(illustration,artLp);
+        TextView launch=button("▶    Launch floating reader",true,v->startOverlay());
+        add(content,launch,18);
+        LinearLayout permission=horizontal();
+        permission.setBackground(rounded(0xff161b28,14));pad(permission,13,13,12,13);
+        permissionText=text("",12,MUTED,false);
+        permission.addView(permissionText,new LinearLayout.LayoutParams(0,-2,1));
+        permission.addView(tinyAction("Settings  ›",v->requestOverlayPermission()));
+        add(content,permission,12);
+        updatePermission();
+
+        sectionHeading(content,"UP NEXT","All scripts  ›",v->{tab=1;renderTab();renderNav();});
+        LinearLayout current=vertical();pad(current,17,18,17,18);
+        current.setBackground(outlined(SURFACE,21,BORDER));
+        LinearLayout top=horizontal();
+        addWeighted(top,pill("●  SELECTED SCRIPT",MINT,0xff163d35),1);
+        top.addView(tinyAction("Edit  ↗",v->openEditor()));
+        current.addView(top);
+        TextView title=text(selected.title,20,WHITE,true);
+        add(current,title,16);
+        String preview=selected.body.trim();
+        if(preview.isEmpty()) preview="Write something meaningful and it will appear here.";
+        if(preview.length()>155)preview=preview.substring(0,155)+"…";
+        TextView excerpt=text(preview,14,MUTED,false);
+        excerpt.setMaxLines(3);excerpt.setLineSpacing(dp(3),1f);
+        add(current,excerpt,8);
+        View divider=new View(this);divider.setBackgroundColor(0xff37394c);
+        LinearLayout.LayoutParams dividerLp=new LinearLayout.LayoutParams(-1,dp(1));
+        dividerLp.topMargin=dp(17);current.addView(divider,dividerLp);
+        LinearLayout metadata=horizontal();
+        TextView count=text(wordCount(selected.body)+" words  •  Saved on this device",12,MUTED,false);
+        metadata.addView(count,new LinearLayout.LayoutParams(0,-2,1));
+        add(current,metadata,15);
+        add(content,current,7);
+
+        sectionHeading(content,"CREATOR FLOW",null,null);
+        LinearLayout steps=horizontal();
+        String[] titles={"01  WRITE","02  FLOAT","03  RECORD"};
+        for(int i=0;i<3;i++){
+            LinearLayout step=vertical();
+            step.setBackground(rounded(i==1?0xff28223d:SURFACE,15));
+            pad(step,10,14,10,14);
+            TextView t=text(titles[i],10,i==1?0xffc6b0ff:MUTED,true);
+            t.setGravity(Gravity.CENTER);step.addView(t);
+            LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(0,-2,1);
+            if(i<2)lp.rightMargin=dp(7);
+            steps.addView(step,lp);
+        }
+        add(content,steps,7);
+    }
+
+    private void renderLibrary() {
+        add(content,caption("THE LIBRARY"),18);
+        add(content,text("Your words,\nbeautifully organized.",31,WHITE,true),12);
+        add(content,text("Private scripts saved on your phone. Tap any script to edit.",14,MUTED,false),12);
+        add(content,button("+   Create new script",true,v->newScript()),20);
+        List<ScriptStore.Script> scripts=ScriptStore.all(this);
+        sectionHeading(content,"ALL SCRIPTS  ·  "+scripts.size(),null,null);
+        for(ScriptStore.Script s:scripts){
+            boolean active=s.id.equals(selected.id);
+            LinearLayout card=vertical();
+            pad(card,16,16,16,15);
+            card.setBackground(touchBackground(outlined(active?0xff242139:SURFACE,18,
+                active?0xff745f9b:BORDER)));
+            LinearLayout first=horizontal();
+            TextView index=text("▤",22,active?PURPLE:MUTED,false);
+            index.setGravity(Gravity.CENTER);
+            first.addView(index,new LinearLayout.LayoutParams(dp(36),dp(40)));
+            LinearLayout words=vertical();
+            pad(words,7,0,0,0);
+            TextView title=text(s.title,17,WHITE,true);title.setSingleLine(true);title.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            words.addView(title);
+            String excerpt=s.body.trim().replace("\n"," ");
+            if(excerpt.isEmpty())excerpt="Ready for a fresh idea";
+            if(excerpt.length()>70)excerpt=excerpt.substring(0,70)+"…";
+            TextView snippet=text(excerpt,12,MUTED,false);
+            snippet.setSingleLine(true);snippet.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            add(words,snippet,6);
+            first.addView(words,new LinearLayout.LayoutParams(0,-2,1));
+            TextView arrow=text("↗",21,active?PURPLE:WHITE,false);pad(arrow,9,0,0,0);
+            first.addView(arrow);
+            card.addView(first);
+            LinearLayout bottom=horizontal();
+            TextView count=text(wordCount(s.body)+" WORDS  ·  "+
+                DateFormat.getDateInstance(DateFormat.MEDIUM).format(new Date(s.updatedAt)),10,MUTED,true);
+            count.setLetterSpacing(.03f);
+            bottom.addView(count,new LinearLayout.LayoutParams(0,-2,1));
+            if(active)bottom.addView(pill("ACTIVE",PURPLE,0xff392e50));
+            add(card,bottom,18);
+            card.setOnClickListener(v->{
+                selected=s;
+                ScriptStore.select(this,s.id);
+                openEditor();
+            });
+            add(content,card,9);
+        }
+        TextView reassurance=text("●  Offline by design. Your scripts never leave this device.",12,MUTED,false);
+        add(content,reassurance,21);
+    }
+
+    private void renderStyle() {
+        add(content,caption("READING EXPERIENCE"),18);
+        add(content,text("Make it feel\nlike you.",33,WHITE,true),12);
+        TextView intro=text("Dial in the perfect size, pace and visibility before your next take.",14,MUTED,false);
+        add(content,intro,12);
+
+        LinearLayout previewCard=vertical();
+        previewCard.setBackground(outlined(SURFACE,21,BORDER));
+        pad(previewCard,16,16,16,16);
+        previewCard.addView(caption("LIVE PANEL PREVIEW"));
+        stylePreview=text("You're ready for your next great take.\n\nKeep your eyes on the camera.",28,WHITE,false);
+        stylePreview.setGravity(Gravity.TOP|Gravity.START);
+        stylePreview.setLineSpacing(dp(7),1.09f);
+        pad(stylePreview,17,22,17,20);
+        add(previewCard,stylePreview,14);
+        add(content,previewCard,22);
+        updateStylePreview();
+
+        sectionHeading(content,"TUNING CONTROLS",null,null);
+        settingCard("speed","SCROLL SPEED","How quickly your words move",20,250,90," px/s");
+        settingCard("font","FONT SIZE","Readable from near or far",18,64,34," sp");
+        settingCard("opacity","WINDOW OPACITY","Control how much is visible behind the script",20,95,76,"%");
+        add(content,button("▶   Test floating reader",true,v->startOverlay()),22);
+        TextView hint=text("Settings apply immediately to an active floating reader. Some apps may block overlays.",12,MUTED,false);
+        add(content,hint,14);
+    }
+
+    private void settingCard(String key,String title,String detail,int min,int max,int def,String unit) {
+        LinearLayout card=vertical();
+        card.setBackground(outlined(SURFACE,18,BORDER));
+        pad(card,16,17,16,13);
+        LinearLayout top=horizontal();
+        TextView name=text(title,12,WHITE,true);name.setLetterSpacing(.06f);
+        top.addView(name,new LinearLayout.LayoutParams(0,-2,1));
+        TextView value=text("",13,PURPLE,true);
+        top.addView(value);
+        card.addView(top);
+        add(card,text(detail,12,MUTED,false),7);
+        SeekBar seek=new SeekBar(this);
+        seek.setProgressTintList(ColorStateList.valueOf(PURPLE));
+        seek.setThumbTintList(ColorStateList.valueOf(0xffc8b4ff));
+        seek.setProgressBackgroundTintList(ColorStateList.valueOf(BORDER));
+        int original=ScriptStore.prefs(this).getInt(key,def);
+        seek.setMax(max-min);
+        seek.setProgress(Math.max(0,Math.min(max-min,original-min)));
+        value.setText(original+unit);
+        add(card,seek,12);
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            public void onStartTrackingTouch(SeekBar s){}
+            public void onStopTrackingTouch(SeekBar s){}
+            public void onProgressChanged(SeekBar s,int progress,boolean fromUser){
+                int actual=min+progress;
+                value.setText(actual+unit);
+                if(fromUser){
+                    ScriptStore.prefs(MainActivity.this).edit().putInt(key,actual).apply();
+                    updateStylePreview();
                     refreshOverlay();
                 }
             }
         });
+        add(content,card,10);
     }
-    private void renderList() {
-        scriptList.removeAllViews();
-        for (ScriptStore.Script script : ScriptStore.all(this)) {
-            final boolean isSelected = script.id.equals(selected.id);
-            TextView item = text((isSelected ? "● " : "○ ") + script.title, 15,
-                isSelected ? PURPLE : WHITE, isSelected);
-            item.setBackground(shape(SURFACE, 12)); pad(item, 14, 10, 14, 10);
-            margin(scriptList, item, 4);
-            item.setOnClickListener(v -> {
-                save(); selected = script; ScriptStore.select(this, script.id);
-                bindScript(); renderList();
-            });
+    private void updateStylePreview(){
+        if(stylePreview==null)return;
+        int size=ScriptStore.prefs(this).getInt("font",34);
+        int opacity=ScriptStore.prefs(this).getInt("opacity",76);
+        stylePreview.setTextSize(Math.max(16,Math.min(33,size)));
+        stylePreview.setBackground(rounded(Color.argb((int)(opacity*2.55f),43,37,72),16));
+    }
+    private void updatePermission() {
+        if(permissionText!=null)permissionText.setText(
+            Settings.canDrawOverlays(this)?"●  Overlay access is enabled":"○  Allow display over other apps");
+        if(permissionText!=null)permissionText.setTextColor(
+            Settings.canDrawOverlays(this)?MINT:MUTED);
+    }
+    private void requestOverlayPermission() {
+        try{
+            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:"+getPackageName())));
+        }catch(Exception e){
+            toast("Open Android Settings and allow display over other apps.");
         }
     }
-    private void bindScript() {
+
+    private void newScript() {
+        selected=ScriptStore.create(this);
+        openEditor();
+    }
+    private void openEditor() {
+        editorOpen=true;
+        screen=vertical();screen.setBackgroundColor(BG);
+        setContentView(screen);
+        LinearLayout toolbar=horizontal();
+        pad(toolbar,18,15,18,14);
+        TextView back=text("‹",31,WHITE,false);
+        back.setGravity(Gravity.CENTER);
+        back.setBackground(touchBackground(rounded(SURFACE,13)));
+        back.setContentDescription("Back to studio");
+        back.setOnClickListener(v->{ saveEditor(false);editorOpen=false;buildStudio(); });
+        toolbar.addView(back,new LinearLayout.LayoutParams(dp(43),dp(43)));
+        LinearLayout heading=vertical();pad(heading,14,0,0,0);
+        heading.addView(text("Script editor",20,WHITE,true));
+        add(heading,text("PRIVATE  ·  SAVED ON DEVICE",10,MUTED,true),5);
+        toolbar.addView(heading,new LinearLayout.LayoutParams(0,-2,1));
+        TextView save=tinyAction("Save  ✓",v->saveEditor(true));
+        toolbar.addView(save);
+        screen.addView(toolbar);
+
+        ScrollView scroll=new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout editor=vertical();
+        pad(editor,20,12,20,34);
+        scroll.addView(editor);
+        screen.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+
+        add(editor,caption("SCRIPT TITLE"),16);
+        titleInput=new EditText(this);
+        titleInput.setSingleLine(true);titleInput.setSelectAllOnFocus(false);
+        titleInput.setTextSize(24);titleInput.setTextColor(WHITE);titleInput.setHintTextColor(MUTED);
+        titleInput.setBackground(outlined(SURFACE,17,BORDER));
+        titleInput.setHint("Give your script a title");
         titleInput.setText(selected.title);
+        pad(titleInput,17,18,17,18);
+        add(editor,titleInput,9);
+
+        LinearLayout metadata=horizontal();
+        TextView wordCountLabel=text(wordCount(selected.body)+" words",12,MUTED,true);
+        metadata.addView(wordCountLabel,new LinearLayout.LayoutParams(0,-2,1));
+        metadata.addView(pill("AUTO LOCAL",MINT,0xff173a31));
+        add(editor,metadata,19);
+        add(editor,caption("YOUR WORDS"),17);
+
+        scriptInput=new EditText(this);
+        scriptInput.setGravity(Gravity.TOP|Gravity.START);
+        scriptInput.setInputType(InputType.TYPE_CLASS_TEXT |
+            InputType.TYPE_TEXT_FLAG_MULTI_LINE |
+            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        scriptInput.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);
+        scriptInput.setTextColor(WHITE);scriptInput.setHintTextColor(MUTED);
+        scriptInput.setTextSize(19);scriptInput.setLineSpacing(dp(7),1.1f);
+        scriptInput.setMinLines(12);
+        scriptInput.setHint("The next great story starts here…");
+        scriptInput.setBackground(outlined(SURFACE,18,BORDER));
+        pad(scriptInput,18,20,18,20);
         scriptInput.setText(selected.body);
-    }
-    private void save() {
-        selected.title = titleInput.getText().toString().trim();
-        if (selected.title.isEmpty()) selected.title = "Untitled script";
-        selected.body = scriptInput.getText().toString();
-        ScriptStore.save(this, selected);
-        renderList(); refreshOverlay();
-        toast("Saved locally");
-    }
-    private void paste() {
-        ClipboardManager m = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        if (m != null && m.hasPrimaryClip()) {
-            ClipData clip = m.getPrimaryClip();
-            if (clip != null && clip.getItemCount() > 0) {
-                CharSequence text = clip.getItemAt(0).coerceToText(this);
-                int cursor = Math.max(0, scriptInput.getSelectionStart());
-                scriptInput.getText().insert(cursor, text);
+        scriptInput.addTextChangedListener(new android.text.TextWatcher(){
+            public void beforeTextChanged(CharSequence s,int st,int c,int after){}
+            public void onTextChanged(CharSequence s,int st,int before,int count){
+                wordCountLabel.setText(wordCount(s.toString())+" words");
             }
-        }
+            public void afterTextChanged(android.text.Editable s){}
+        });
+        add(editor,scriptInput,10);
+
+        LinearLayout tools=horizontal();
+        TextView paste=button("▤   Paste",false,v->paste());
+        TextView load=button("↓   Import TXT",false,v->importText());
+        LinearLayout.LayoutParams half=new LinearLayout.LayoutParams(0,dp(50),1);
+        half.rightMargin=dp(6);tools.addView(paste,half);
+        tools.addView(load,new LinearLayout.LayoutParams(0,dp(50),1));
+        add(editor,tools,13);
+
+        TextView danger=tinyAction("Delete this script",v->{
+            new AlertDialog.Builder(this)
+                .setTitle("Delete script?")
+                .setMessage("This removes the script from this device.")
+                .setNegativeButton("Cancel",null)
+                .setPositiveButton("Delete",(dialog,which)->{
+                    ScriptStore.delete(this,selected.id);
+                    selected=ScriptStore.active(this);
+                    editorOpen=false;
+                    tab=1;buildStudio();
+                }).show();
+        });
+        danger.setTextColor(0xffff9ba9);
+        add(editor,danger,16);
+
+        LinearLayout bottom=horizontal();
+        bottom.setBackgroundColor(BG);pad(bottom,20,8,20,16);
+        TextView finish=button("✓   Save",false,v->saveEditor(true));
+        TextView launch=button("▶   Go live with script",true,v->{saveEditor(false);startOverlay();});
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(53),.7f);
+        p.rightMargin=dp(8);bottom.addView(finish,p);
+        bottom.addView(launch,new LinearLayout.LayoutParams(0,dp(53),1.3f));
+        screen.addView(bottom);
+    }
+
+    private void saveEditor(boolean notify) {
+        if(!editorOpen || titleInput==null || scriptInput==null)return;
+        selected.title=titleInput.getText().toString().trim();
+        if(selected.title.isEmpty())selected.title="Untitled script";
+        selected.body=scriptInput.getText().toString();
+        ScriptStore.save(this,selected);
+        refreshOverlay();
+        if(notify)toast("Saved on your device");
+    }
+    private static int wordCount(String s) {
+        if(s==null || s.trim().isEmpty())return 0;
+        return s.trim().split("\\s+").length;
+    }
+    private void paste(){
+        if(scriptInput==null)return;
+        ClipboardManager manager=(ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+        if(manager==null || !manager.hasPrimaryClip()){toast("Clipboard is empty");return;}
+        ClipData clip=manager.getPrimaryClip();
+        if(clip==null || clip.getItemCount()==0)return;
+        CharSequence value=clip.getItemAt(0).coerceToText(this);
+        if(value==null)return;
+        int cursor=Math.max(0,scriptInput.getSelectionStart());
+        scriptInput.getText().insert(cursor,value);
     }
     private void importText() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("text/plain");
-        startActivityForResult(i, DOC_REQUEST);
+        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        startActivityForResult(intent,DOC_REQUEST);
     }
-    @Override protected void onActivityResult(int req, int res, Intent data) {
-        super.onActivityResult(req, res, data);
-        if (req == DOC_REQUEST && res == RESULT_OK && data != null && data.getData() != null) {
-            try (InputStream stream = getContentResolver().openInputStream(data.getData());
-                 ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-                byte[] buf = new byte[4096]; int n;
-                while ((n = stream.read(buf)) != -1 && out.size() < 1024 * 1024) out.write(buf, 0, n);
-                scriptInput.setText(out.toString(StandardCharsets.UTF_8.name()));
-            } catch (Exception e) { toast("Could not import TXT file"); }
-        }
+    @Override protected void onActivityResult(int request,int result,Intent data) {
+        super.onActivityResult(request,result,data);
+        if(request!=DOC_REQUEST || result!=RESULT_OK || data==null || data.getData()==null)return;
+        if(!editorOpen)openEditor();
+        try(InputStream in=getContentResolver().openInputStream(data.getData());
+            ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in==null)throw new IllegalArgumentException("Cannot open file");
+            byte[] chunk=new byte[8192];int size;
+            while((size=in.read(chunk))!=-1){
+                if(out.size()+size>1024*1024)throw new IllegalArgumentException("File exceeds 1MB");
+                out.write(chunk,0,size);
+            }
+            scriptInput.setText(out.toString(StandardCharsets.UTF_8.name()));
+            toast("Text imported. Save when ready.");
+        }catch(Exception ex){toast("Import failed. Use a TXT file under 1 MB.");}
     }
-    private void handleIncoming(Intent intent) {
-        if (intent == null) return;
-        CharSequence incoming = null;
-        if (Intent.ACTION_SEND.equals(intent.getAction()) && "text/plain".equals(intent.getType()))
-            incoming = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
-        if (Intent.ACTION_PROCESS_TEXT.equals(intent.getAction()))
-            incoming = intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
-        if (incoming != null) {
-            selected = ScriptStore.create(this);
-            selected.title = "Imported script";
-            selected.body = incoming.toString();
-            ScriptStore.save(this, selected);
-            bindScript(); renderList();
+    private void handleIncoming(Intent intent){
+        if(intent==null)return;
+        CharSequence incoming=null;
+        if(Intent.ACTION_SEND.equals(intent.getAction()) && "text/plain".equals(intent.getType()))
+            incoming=intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        if(Intent.ACTION_PROCESS_TEXT.equals(intent.getAction()))
+            incoming=intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT);
+        if(incoming!=null){
+            if(editorOpen)saveEditor(false);
+            selected=ScriptStore.create(this);
+            selected.title="Imported script";
+            selected.body=incoming.toString();
+            ScriptStore.save(this,selected);
+            openEditor();
             intent.setAction(null);
-            toast("Script imported from another app");
+            toast("Imported from another app");
         }
     }
-    private void refreshOverlay() {
-        Intent i = new Intent(this, OverlayService.class);
-        i.setAction(OverlayService.ACTION_REFRESH);
-        if (OverlayService.isRunning) startService(i);
+    private void refreshOverlay(){
+        if(!OverlayService.isRunning)return;
+        Intent intent=new Intent(this,OverlayService.class);
+        intent.setAction(OverlayService.ACTION_REFRESH);
+        startService(intent);
     }
-    private void startOverlay() {
-        save();
-        if (!Settings.canDrawOverlays(this)) {
-            toast("Please allow Draw over other apps, then return and tap Start");
-            startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                Uri.parse("package:" + getPackageName())));
-            return;
+    private void startOverlay(){
+        if(editorOpen)saveEditor(false);
+        if(!Settings.canDrawOverlays(this)){
+            toast("Allow FloatCue to display over other apps.");
+            requestOverlayPermission();return;
         }
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{ Manifest.permission.POST_NOTIFICATIONS }, 42);
+        if(Build.VERSION.SDK_INT>=33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},42);
         }
-        Intent i = new Intent(this, OverlayService.class);
+        Intent i=new Intent(this,OverlayService.class);
         i.setAction(OverlayService.ACTION_SHOW);
-        try { startForegroundService(i); toast("FloatCue is floating — switch to your camera!"); }
-        catch (Exception e) { toast("Unable to start overlay: " + e.getClass().getSimpleName()); }
+        try{
+            startForegroundService(i);
+            toast("FloatCue ready — open your camera!");
+        }catch(Exception ex){
+            toast("Could not start overlay: "+ex.getClass().getSimpleName());
+        }
     }
-    private void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
+    private void toast(String text){Toast.makeText(this,text,Toast.LENGTH_SHORT).show();}
 }
