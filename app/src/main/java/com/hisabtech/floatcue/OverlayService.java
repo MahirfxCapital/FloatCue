@@ -32,9 +32,9 @@ public final class OverlayService extends Service {
     public static final String ACTION_REFRESH = "com.hisabtech.floatcue.REFRESH";
     private static final String CHANNEL = "floatcue_overlay";
     private static final int NOTIFICATION_ID = 2001;
-    private static final int PURPLE = Color.rgb(145, 105, 248);
-    private static final int WHITE = Color.WHITE;
-    private static final int MUTED = Color.rgb(194, 196, 216);
+    private static final int PURPLE = 0xff9a76ff;
+    private static final int WHITE = 0xfff7f5ff;
+    private static final int MUTED = 0xffa5abc2;
     public static volatile boolean isRunning = false;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -127,8 +127,8 @@ public final class OverlayService extends Service {
     }
     private Button control(String symbol, View.OnClickListener listener) {
         Button b = new Button(this);
-        b.setText(symbol); b.setTextSize(13); b.setAllCaps(false);
-        b.setTextColor(WHITE); b.setBackground(rounded(Color.rgb(49, 44, 72), 13));
+        b.setText(symbol); b.setTextSize(12); b.setAllCaps(false); b.setContentDescription(symbol);
+        b.setTextColor(WHITE); b.setBackground(rounded(0xff39334f, 12));
         b.setMinWidth(0); b.setMinimumWidth(0);
         b.setMinHeight(0); b.setMinimumHeight(0);
         b.setPadding(0, 0, 0, 0);
@@ -142,7 +142,7 @@ public final class OverlayService extends Service {
     }
     private void createOverlay() {
         panelWidth = ScriptStore.prefs(this).getInt("panel_width", dp(335));
-        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(265));
+        panelHeight = ScriptStore.prefs(this).getInt("panel_height", dp(280));
         params = new WindowManager.LayoutParams(
             panelWidth, panelHeight, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
@@ -160,13 +160,13 @@ public final class OverlayService extends Service {
 
         LinearLayout top = new LinearLayout(this);
         top.setGravity(Gravity.CENTER_VERTICAL);
-        top.setPadding(dp(10), dp(6), dp(8), dp(4));
-        TextView grip = text("⋮⋮  FloatCue", 14, WHITE, true);
+        top.setPadding(dp(9), dp(7), dp(9), dp(5));
+        TextView grip = text("⋮⋮  ✦ FloatCue", 14, WHITE, true); grip.setContentDescription("Drag floating reader");
         grip.setOnTouchListener(dragListener(false));
         top.addView(grip, new LinearLayout.LayoutParams(0, dp(40), 1));
-        addControl(top, control("−", v -> changeFont(-2)), 30);
-        addControl(top, control("+", v -> changeFont(2)), 30);
-        addControl(top, control("_", v -> collapse()), 30);
+        addControl(top, control("A−", v -> changeFont(-2)), 32);
+        addControl(top, control("A+", v -> changeFont(2)), 32);
+        addControl(top, control("⌄", v -> collapse()), 30);
         addControl(top, control("×", v -> stopSelf()), 30);
         panel.addView(top, new LinearLayout.LayoutParams(-1, dp(50)));
 
@@ -176,34 +176,34 @@ public final class OverlayService extends Service {
         scriptText = text("", 34, WHITE, false);
         scriptText.setGravity(Gravity.TOP | Gravity.START);
         scriptText.setTextDirection(View.TEXT_DIRECTION_FIRST_STRONG);
-        scriptText.setLineSpacing(dp(9), 1.12f);
-        scriptText.setPadding(dp(18), dp(8), dp(18), dp(24));
+        scriptText.setLineSpacing(dp(10), 1.14f);
+        scriptText.setPadding(dp(20), dp(13), dp(20), dp(27));
         scriptScroll.addView(scriptText, new ScrollView.LayoutParams(-1, -2));
         panel.addView(scriptScroll, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout footer = new LinearLayout(this);
         footer.setGravity(Gravity.CENTER_VERTICAL);
-        footer.setPadding(dp(10), dp(3), dp(8), dp(7));
-        playButton = control("▶ Play", v -> setPlaying(!playing));
-        addControl(footer, playButton, 68);
-        addControl(footer, control("↺", v -> restart()), 36);
-        addControl(footer, control("− speed", v -> changeSpeed(-20)), 68);
-        addControl(footer, control("+ speed", v -> changeSpeed(20)), 68);
+        footer.setPadding(dp(8), dp(3), dp(8), dp(6));
+        playButton = control("▶  Play", v -> setPlaying(!playing)); playButton.setBackground(rounded(PURPLE, 13)); playButton.setTextColor(0xff160d25);
+        addControl(footer, playButton, 70);
+        addControl(footer, control("↺", v -> restart()), 34);
+        addControl(footer, control("−", v -> changeSpeed(-20)), 39);
+        addControl(footer, control("+", v -> changeSpeed(20)), 39);
         addControl(footer, control("⇋", v -> {
             mirrored = !mirrored;
             scriptText.setScaleX(mirrored ? -1 : 1);
-        }), 35);
+        }), 37);
         panel.addView(footer, new LinearLayout.LayoutParams(-1, dp(48)));
 
-        status = text("DRAG HERE TO RESIZE  ↘", 10, MUTED, true);
+        status = text("90 px/s    •    RESIZE ↘", 10, MUTED, true); status.setContentDescription("Drag to resize floating reader");
         status.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         status.setPadding(dp(6), 0, dp(14), 0);
         status.setOnTouchListener(resizeListener());
         panel.addView(status, new LinearLayout.LayoutParams(-1, dp(26)));
 
-        bubble = text("FC", 18, WHITE, true);
+        bubble = text("✦", 23, WHITE, true); bubble.setContentDescription("Expand FloatCue reader");
         bubble.setGravity(Gravity.CENTER);
-        bubble.setBackground(rounded(PURPLE, 23));
+        bubble.setBackground(rounded(PURPLE, 29));
         bubble.setVisibility(View.GONE);
         bubble.setOnTouchListener(dragListener(true));
         root.addView(bubble, new FrameLayout.LayoutParams(-1, -1));
@@ -226,7 +226,8 @@ public final class OverlayService extends Service {
             "Add a script in FloatCue to start reading." : script + "\n\n\n\n\n");
         int opacity = ScriptStore.prefs(this).getInt("opacity", 76);
         int alpha = (int)(255 * opacity / 100f);
-        panel.setBackground(rounded(Color.argb(alpha, 17, 20, 33), 20));
+        panel.setBackground(rounded(Color.argb(alpha, 22, 20, 39), 22));
+        status.setText((int)speed + " px/s    •    RESIZE ↘");
         scriptScroll.post(() -> {
             int max = Math.max(0, scriptText.getHeight() - scriptScroll.getHeight());
             scrollPosition = Math.min(scrollPosition, max);
@@ -241,7 +242,7 @@ public final class OverlayService extends Service {
     private void changeSpeed(int amount) {
         speed = Math.max(20, Math.min(250, speed + amount));
         ScriptStore.prefs(this).edit().putInt("speed", (int)speed).apply();
-        if (status != null) status.setText((int)speed + " px/s     DRAG HERE TO RESIZE  ↘");
+        if (status != null) status.setText((int)speed + " px/s    •    RESIZE ↘");
     }
     private void restart() {
         scrollPosition = 0;
@@ -251,7 +252,7 @@ public final class OverlayService extends Service {
     private void setPlaying(boolean value) {
         playing = value;
         handler.removeCallbacks(frame);
-        if (playButton != null) playButton.setText(value ? "❚❚ Pause" : "▶ Play");
+        if (playButton != null) playButton.setText(value ? "Ⅱ  Pause" : "▶  Play");
         if (value && !collapsed) {
             lastFrame = SystemClock.uptimeMillis();
             handler.post(frame);
